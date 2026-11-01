@@ -1,0 +1,22 @@
+# 构建上下文瘦身：运行时镜像只需要 app/ 与依赖清单
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.git/
+.gitignore
+.github/
+docs/
+tests/
+.tmp/
+.env
+.env.*
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+majiang.py

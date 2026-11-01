@@ -1,0 +1,29 @@
+# 本地一键起服务：docker compose up --build
+# 打开 http://127.0.0.1:8000/ 或 http://127.0.0.1:8000/docs
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gd-mahjong-api:latest
+    container_name: gd-mahjong-api
+    ports:
+      - "8000:8000"
+    environment:
+      # 全部可用环境变量覆盖，见 app/core/config.py
+      APP_NAME: "广东麻将（推倒胡）后端服务"
+      VERSION: "0.1.0"
+      CORS_ORIGINS: "*"
+      MAX_GAMES: "100"
+      GAME_TTL_SECONDS: "7200"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

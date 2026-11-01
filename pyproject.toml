@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gd-mahjong-api"
+version = "0.1.0"
+description = "广东麻将（推倒胡）后端服务：胡牌判定、听牌计算与内存对局管理"
+requires-python = ">=3.12"
+authors = [{ name = "fastapi-mahjong" }]
+keywords = ["fastapi", "mahjong", "pydantic", "python-backend"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Typing :: Typed",
+]
+# 依赖清单就是唯一真相：Dockerfile 从这个列表安装，CI 用 [dev] 装测试工具。
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.2,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+# 行宽与工程约定 v1 第 6 节一致；规则集用 ruff 默认规则，不额外开启争议规则。
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 让测试可以直接 import app.*，不依赖 pip install -e .（本地 / CI 都可直接跑）
+pythonpath = ["."]
+addopts = "-q"
