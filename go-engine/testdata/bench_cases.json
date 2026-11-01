@@ -1,0 +1,18 @@
+{
+  "comment": "Go benchmark 与 Python timeit 共用的同一批用例；hand 为简写文本（规则同 Python 测试里的 手牌()）。win 组为 14 张，wait 组为 13 张。",
+  "win": [
+    { "id": "win_standard", "hand": "123456789m 123p 99s" },
+    { "id": "win_backtrack", "hand": "111222333444m 56m" },
+    { "id": "win_seven_pairs", "hand": "11m 22m 33m 44p 55p 66s EE" },
+    { "id": "win_honors", "hand": "EEE PPP FFF CCC 11m" },
+    { "id": "lose_scattered", "hand": "1m 4m 7m 1p 4p 7p 1s 4s 7s E S W N P" },
+    { "id": "lose_triplets", "hand": "111222333444m 5m 7m" }
+  ],
+  "wait": [
+    { "id": "wait_two_sided", "hand": "123m 456m 789m 11p 45s" },
+    { "id": "wait_nine_gates", "hand": "1112345678999m" },
+    { "id": "wait_seven_pairs", "hand": "11m 22m 33m 44p 55p 66s E" },
+    { "id": "wait_none", "hand": "1m 4m 7m 1p 4p 7p 1s 4s 7s E S W N" },
+    { "id": "wait_four_copies", "hand": "123m 456m 789m 9999s" }
+  ]
+}

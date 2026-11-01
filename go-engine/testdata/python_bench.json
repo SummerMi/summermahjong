@@ -1,0 +1,124 @@
+{
+ "python_version": "3.12.3",
+ "interpreter": "C:\\Users\\SumMi\\Documents\\agent-learning\\fastapi\\.venv\\Scripts\\python.exe",
+ "timer": "timeit.Timer.repeat(repeat=7, best-of)",
+ "overhead_ns": 24.33,
+ "case_file": "go-engine/testdata/bench_cases.json",
+ "note": "同机、单线程、非压测；单次耗时已扣掉 lambda 调用 / timeit 开销",
+ "cases": {
+  "win": [
+   {
+    "id": "win_standard",
+    "hand": "123456789m 123p 99s",
+    "number": 9575,
+    "repeat": 7,
+    "raw_ns_per_call": 5740.45,
+    "call_overhead_ns": 25.68,
+    "ns_per_call": 5714.77,
+    "us_per_call": 5.715
+   },
+   {
+    "id": "win_backtrack",
+    "hand": "111222333444m 56m",
+    "number": 11066,
+    "repeat": 7,
+    "raw_ns_per_call": 4546.92,
+    "call_overhead_ns": 24.25,
+    "ns_per_call": 4522.67,
+    "us_per_call": 4.523
+   },
+   {
+    "id": "win_seven_pairs",
+    "hand": "11m 22m 33m 44p 55p 66s EE",
+    "number": 4350,
+    "repeat": 7,
+    "raw_ns_per_call": 12030.67,
+    "call_overhead_ns": 25.47,
+    "ns_per_call": 12005.2,
+    "us_per_call": 12.005
+   },
+   {
+    "id": "win_honors",
+    "hand": "EEE PPP FFF CCC 11m",
+    "number": 7458,
+    "repeat": 7,
+    "raw_ns_per_call": 6273.04,
+    "call_overhead_ns": 24.26,
+    "ns_per_call": 6248.77,
+    "us_per_call": 6.249
+   },
+   {
+    "id": "lose_scattered",
+    "hand": "1m 4m 7m 1p 4p 7p 1s 4s 7s E S W N P",
+    "number": 16998,
+    "repeat": 7,
+    "raw_ns_per_call": 3250.02,
+    "call_overhead_ns": 25.1,
+    "ns_per_call": 3224.92,
+    "us_per_call": 3.225
+   },
+   {
+    "id": "lose_triplets",
+    "hand": "111222333444m 5m 7m",
+    "number": 3714,
+    "repeat": 7,
+    "raw_ns_per_call": 12944.7,
+    "call_overhead_ns": 23.09,
+    "ns_per_call": 12921.61,
+    "us_per_call": 12.922
+   }
+  ],
+  "wait": [
+   {
+    "id": "wait_two_sided",
+    "hand": "123m 456m 789m 11p 45s",
+    "number": 405,
+    "repeat": 7,
+    "raw_ns_per_call": 122224.69,
+    "call_overhead_ns": 24.49,
+    "ns_per_call": 122200.2,
+    "us_per_call": 122.2
+   },
+   {
+    "id": "wait_nine_gates",
+    "hand": "1112345678999m",
+    "number": 302,
+    "repeat": 7,
+    "raw_ns_per_call": 164316.56,
+    "call_overhead_ns": 24.61,
+    "ns_per_call": 164291.95,
+    "us_per_call": 164.292
+   },
+   {
+    "id": "wait_seven_pairs",
+    "hand": "11m 22m 33m 44p 55p 66s E",
+    "number": 193,
+    "repeat": 7,
+    "raw_ns_per_call": 262066.32,
+    "call_overhead_ns": 24.56,
+    "ns_per_call": 262041.77,
+    "us_per_call": 262.042
+   },
+   {
+    "id": "wait_none",
+    "hand": "1m 4m 7m 1p 4p 7p 1s 4s 7s E S W N",
+    "number": 1121,
+    "repeat": 7,
+    "raw_ns_per_call": 41845.58,
+    "call_overhead_ns": 24.32,
+    "ns_per_call": 41821.26,
+    "us_per_call": 41.821
+   },
+   {
+    "id": "wait_four_copies",
+    "hand": "123m 456m 789m 9999s",
+    "number": 418,
+    "repeat": 7,
+    "raw_ns_per_call": 112782.78,
+    "call_overhead_ns": 25.1,
+    "ns_per_call": 112757.68,
+    "us_per_call": 112.758
+   }
+  ]
+ }
+}
