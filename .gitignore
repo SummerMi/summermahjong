@@ -1,4 +1,25 @@
+# ---- Python ----
 .venv/
+**/.venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# ---- 环境与密钥 ----
 .env
+.env.*
+!.env.example
+
+# ---- 本地产物 ----
+*.log
+.tmp/
+.playwright-mcp/
+
+# ---- 工具/编辑器 ----
+.vscode/
+.idea/
