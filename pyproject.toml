@@ -20,6 +20,10 @@ dependencies = [
     "uvicorn[standard]>=0.30,<1.0",
     "pydantic>=2.7,<3.0",
     "pydantic-settings>=2.2,<3.0",
+    # 持久化分支：DATABASE_URL 为空时完全不碰数据库，但依赖常驻，
+    # 保证「切数据库」只需要改环境变量、不需要重装环境。
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "aiosqlite>=0.20",  # SQLite 异步驱动（本地验证 / 测试）；生产 MySQL 换 aiomysql
 ]
 
 [project.optional-dependencies]

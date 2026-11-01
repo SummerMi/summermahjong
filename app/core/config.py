@@ -7,6 +7,9 @@
 - ``CORS_ORIGINS``（逗号分隔，例如 ``http://localhost:5173,https://demo.example.com``）
 - ``MAX_GAMES``
 - ``GAME_TTL_SECONDS``
+- ``DATABASE_URL``（为空 = 内存模式；例如 ``sqlite+aiosqlite:///./games.db``
+  或生产 ``mysql+aiomysql://user:pass@host:3306/mahjong``）
+- ``DB_ECHO``（打印 SQL，排查问题时开）
 """
 
 from pydantic import Field
@@ -37,6 +40,16 @@ class Settings(BaseSettings):
     )
     max_games: int = Field(default=100, ge=1, description="内存中同时保留的对局数上限")
     game_ttl_seconds: int = Field(default=7200, ge=1, description="对局闲置超过多少秒后自动清理")
+
+    database_url: str = Field(
+        default="",
+        description=(
+            "数据库连接串（SQLAlchemy 异步 DSN）。留空 = 纯内存模式（零依赖，demo/CI 默认）；"
+            "例如 sqlite+aiosqlite:///./games.db（本地验证）"
+            "或 mysql+aiomysql://user:pass@127.0.0.1:3306/mahjong（生产）"
+        ),
+    )
+    db_echo: bool = Field(default=False, description="是否打印 SQLAlchemy 生成的 SQL（调试用）")
 
     @property
     def cors_origin_list(self) -> list[str]:

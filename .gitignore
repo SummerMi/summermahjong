@@ -23,3 +23,6 @@ dist/
 # ---- 工具/编辑器 ----
 .vscode/
 .idea/
+
+# ---- 本地数据（sqlite 等）----
+data/

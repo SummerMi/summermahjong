@@ -1,11 +1,16 @@
 """内存对局仓库：``asyncio.Lock`` 保护、数量上限、闲置 TTL 清理。
 
-为什么不用数据库：这是一个可演示的实习项目，内存存储零依赖、启动即用；
-接口设计成「仓库」形态，生产环境可以整体替换为 Redis（分布式锁 + TTL）
-或 MySQL（对局表 + 状态机），路由层不用改。
+**默认实现**：``DATABASE_URL`` 为空时应用走这条分支——零依赖、启动即用，
+适合本地 demo 与 CI（不需要起数据库）。
 
-并发说明：本项目单进程部署，用 ``asyncio.Lock`` 保护「读-改-写」临界区即可；
-多进程 / 多实例部署时锁不跨进程，必须换成 Redis 锁或数据库乐观锁。
+为什么还要 SQL 实现：面试与真实业务里「重启后对局还在吗」是必问题。
+仓库接口（:class:`~app.services.repository.base.GameRepository`）把「存取」抽象出来，
+内存实现与 :class:`~app.services.repository.sql.SqlGameRepository` 可以互换，
+路由层一行都不用改。发牌与打牌的规则逻辑放在 ``repository/base.py`` 的纯函数里，
+两种实现共用，保证「换存储不换行为」。
+
+并发说明：单进程部署用 ``asyncio.Lock`` 保护「读-改-写」临界区即可；
+多进程 / 多实例部署时锁不跨进程，必须换 SQL 实现的行锁 / 乐观锁，或 Redis 分布式锁。
 """
 
 from __future__ import annotations
@@ -13,63 +18,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from fastapi import Request
 
-from app.core.errors import (
-    AppError,
-    GameNotFoundError,
-    InvalidHandError,
-    TileNotInHandError,
-)
-from app.services.mahjong.tiles import (
-    TILE_KINDS,
-    build_deck,
-    deal_hands,
-    draw_tile,
-    shuffle_deck,
-    sort_hand,
+from app.core.errors import GameNotFoundError
+from app.services.repository.base import (
+    SEATS,
+    GameRepository,
+    GameState,
+    apply_discard,
+    new_game_state,
 )
 
 logger = logging.getLogger(__name__)
 
-SEATS: tuple[str, ...] = ("east", "south", "west", "north")
-"""座位顺序，固定为逆时针东 → 南 → 西 → 北；east 是庄家。"""
+__all__ = ["SEATS", "GameRepository", "GameState", "GameStore", "get_store"]
 
 
-@dataclass
-class GameState:
-    """一局麻将的完整内存状态（牌墙 + 四家手牌 + 四家牌河）。"""
-
-    game_id: str
-    """对局 id，``uuid4().hex``。"""
-
-    seed: int | None
-    """创建时使用的随机种子；相同种子可复现同一牌局。"""
-
-    wall: list[str]
-    """牌墙（剩余未摸的牌），``draw_tile`` 从尾部弹出。"""
-
-    hands: dict[str, list[str]]
-    """四家手牌，key 为座位。"""
-
-    discards: dict[str, list[str]]
-    """四家牌河，key 为座位。"""
-
-    current_player: str
-    """当前该出牌的座位。"""
-
-    created_at: datetime
-    """创建时间（UTC）。"""
-
-    last_access: float
-    """最近一次访问的 ``time.monotonic()`` 时间戳，用于 TTL 清理。"""
-
-
-class GameStore:
+class GameStore(GameRepository):
     """内存对局仓库。
 
     所有方法都是 ``async`` 的，并用一把 :class:`asyncio.Lock` 保护对局字典，
@@ -107,19 +73,8 @@ class GameStore:
             self._purge_expired_locked()
             self._make_room_locked()
 
-            wall = shuffle_deck(build_deck(), seed=seed)
-            # 引擎的 deal_hands 会从 wall 尾部摸牌，调用后 wall 即剩余牌墙（136 - 53 = 83）
-            dealt = deal_hands(wall)
-            state = GameState(
-                game_id=uuid.uuid4().hex,
-                seed=seed,
-                wall=wall,
-                hands={seat: sort_hand(hand) for seat, hand in dealt.items()},
-                discards={seat: [] for seat in SEATS},
-                current_player="east",
-                created_at=datetime.now(UTC),
-                last_access=time.monotonic(),
-            )
+            state = new_game_state(seed)
+            state.last_access = time.monotonic()
             self._games[state.game_id] = state
             logger.info(
                 "创建对局 game_id=%s seed=%s wall_remaining=%d", state.game_id, seed, len(state.wall)
@@ -154,33 +109,7 @@ class GameStore:
                 raise GameNotFoundError(game_id)
             state.last_access = time.monotonic()
 
-            if tile not in TILE_KINDS:
-                raise InvalidHandError(
-                    f"未知牌：{tile}，合法牌面见 GET /api/v1/mahjong/tiles"
-                )
-            if seat != state.current_player:
-                raise AppError(
-                    "NOT_YOUR_TURN",
-                    f"当前轮到 {state.current_player} 出牌，{seat} 不能打牌",
-                    status_code=400,
-                )
-            if tile not in state.hands[seat]:
-                raise TileNotInHandError(tile)
-
-            state.hands[seat].remove(tile)
-            state.hands[seat] = sort_hand(state.hands[seat])
-            state.discards[seat].append(tile)
-
-            # 轮转下家：东 → 南 → 西 → 北 → 东
-            next_index = (SEATS.index(seat) + 1) % len(SEATS)
-            next_player = SEATS[next_index]
-            state.current_player = next_player
-
-            # 下家自动摸一张；牌墙摸空则只轮转不补牌（演示用，未实现流局/结算）
-            drawn = draw_tile(state.wall)
-            if drawn is not None:
-                state.hands[next_player].append(drawn)
-                state.hands[next_player] = sort_hand(state.hands[next_player])
+            next_player = apply_discard(state, seat, tile)
 
             logger.info(
                 "打牌 game_id=%s seat=%s tile=%s next=%s wall_remaining=%d",
@@ -218,11 +147,15 @@ class GameStore:
             logger.warning("对局数达到上限 %d，淘汰最久未访问的对局 %s", self._max_games, oldest_id)
 
 
-def get_store(request: Request) -> GameStore:
-    """FastAPI 依赖：从 ``app.state`` 取出对局仓库。
+def get_store(request: Request) -> GameRepository:
+    """FastAPI 依赖：返回当前配置对应的对局仓库实现。
 
-    ``GameStore`` 在 ``lifespan`` 启动时创建并挂到 ``app.state.store``，
-    这样测试可以给 :func:`app.main.create_app` 传入自定义配置，互不污染。
+    ``lifespan`` 启动时按 ``settings.database_url`` 选定实现
+    （空 → :class:`GameStore` 内存；非空 → ``SqlGameRepository`` 关系库），
+    挂到 ``app.state.store``；这里只负责取出。路由因此只依赖 ``GameRepository``
+    抽象，对「内存还是数据库」零感知——这就是依赖倒置在真实项目里的样子。
+
+    :raises RuntimeError: 没走 lifespan（例如绕过 ``create_app`` 直接构造请求）。
     """
     store = getattr(request.app.state, "store", None)
     if store is None:  # pragma: no cover - 只有绕过 lifespan 启动才会触发
