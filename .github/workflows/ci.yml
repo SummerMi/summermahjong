@@ -27,8 +27,8 @@ jobs:
       - name: 代码风格检查（ruff）
         run: python -m ruff check app tests scripts
 
-      - name: 单元测试（pytest，默认跳过 MySQL 门控用例）
-        run: python -m pytest
+      - name: 单元测试 + 覆盖率（pytest-cov，低于 85% 直接失败）
+        run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=85
 
   # 2) 真实 MySQL：把测试里被 skip 的 11 个门控用例真的跑起来
   #    这些用例验证的是「SQLite 全绿、MySQL 才暴露」的那类差异（列类型、行锁、死锁重试）

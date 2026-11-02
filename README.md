@@ -5,7 +5,7 @@
 
 ![Swagger UI](docs/images/swagger-full.png)
 
-**一句话数据**：Python 侧 **197 个测试全绿**（另有 11 个 MySQL 门控集成用例）、**三种存储实现**（内存 / SQL / Redis）行为一致、**cache-aside 读缓存**（命中率可观测、缓存故障自动降级）、**JWT 鉴权 + 座位绑定**（默认关闭，开一个环境变量即生效）、**真实 MySQL 5.7.44 实测**并修掉两个只在 MySQL 暴露的缺陷、Go 侧 **15 个测试函数 + 2000 手随机牌逐条对拍**、判胡 Go 比 Python 快 **45×–100×**（0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root + CI 三路（Python / MySQL / Go）全绿。
+**一句话数据**：Python 侧 **218 个测试全绿、覆盖率 93%**（另有 11 个 MySQL 门控集成用例）、**三种存储实现**（内存 / SQL / Redis）行为一致、**cache-aside 读缓存**（命中率可观测、缓存故障自动降级）、**JWT 鉴权 + 座位绑定**（默认关闭，开一个环境变量即生效）、**WebSocket 多人实时对局**（连接表 / 心跳 / 广播 / 断线清理）、**真实 MySQL 5.7.44 实测**并修掉两个只在 MySQL 暴露的缺陷、Go 侧 **15 个测试函数 + 2000 手随机牌逐条对拍**、判胡 Go 比 Python 快 **45×–100×**（0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root + CI 三路（Python / MySQL / Go）全绿。
 
 ---
 
@@ -32,6 +32,8 @@
 | **MySQL 死锁修复** | 隔离实例上实测出 1213 死锁，用「维护事务与插入事务分离 + 有限次退避重试」修到 0 逃逸 |
 | **JWT 鉴权 + 座位绑定** | `JWT_SECRET` 非空即启用：`/api/v1/games*` 需 Bearer Token，只能看/打自己座位；关闭时行为与之前完全一致 |
 | **cache-aside 读缓存** | `CACHE_REDIS_URL` + `CACHE_TTL_SECONDS` 启用：读走 Redis、打牌后删 key；缓存故障自动降级、命中率/错误数可观测 |
+| **WebSocket 实时对局** | `ws://host/api/v1/ws/games/{id}?seat=east`：连接表 / presence 广播 / ping-pong 心跳 / 60s 空闲超时；打牌后全桌收到 `state` |
+| **三路 CI + 覆盖率门禁** | Python（ruff + pytest + `--cov-fail-under=85`）、真实 MySQL service、Go（gofmt/vet/test） |
 | **Go 对照实现** | `go-engine/` 纯标准库重写同一套规则，与 Python 逐条对拍 + benchmark 对比 |
 | **压测工具** | `go-engine/cmd/loadgen`（Go 压测器）+ `scripts/bench_http.py`（Python 版），输出 RPS / p50 / p90 / p99 |
 | 四则运算 | 保留最基础的计算器接口，用来演示统一错误信封与参数校验 |
@@ -87,8 +89,9 @@ go run ./cmd/bench                         # 打印每个用例的 ns/op、µs/o
 | 持久化 | SQLAlchemy 2.0（异步）+ aiosqlite / aiomysql | 内存 / SQL / Redis 三实现，SQLite 与 MySQL 5.7 都实测过 |
 | 缓存/存储 | redis-py（asyncio） | Hash 存快照 + EXPIRE + WATCH/MULTI + ZSET 做 LRU；另作 cache-aside 读缓存 |
 | 鉴权 | PyJWT（HS256） | 座位令牌、座位绑定，无状态、默认关闭 |
+| 实时通信 | Starlette WebSocket | 连接表管理、presence 广播、心跳与空闲超时 |
 | 服务端 | Uvicorn | ASGI 服务器 |
-| 测试 | pytest + httpx + fakeredis | 197 个用例；MySQL 集成用例用 `MYSQL_TEST_URL` 门控 |
+| 测试 | pytest + httpx + fakeredis | 218 个用例、覆盖率 93%；MySQL 集成用例用 `MYSQL_TEST_URL` 门控 |
 | 代码规范 | ruff | line-length 100 |
 | 跨语言实现 | Go 1.25（纯标准库） | 规则引擎对照实现 + benchmark + 压测器 |
 | 容器 | Docker（python:3.12-slim） | 非 root 运行 + HEALTHCHECK |
@@ -116,6 +119,11 @@ go run ./cmd/bench                         # 打印每个用例的 ns/op、µs/o
                          └──────────────┬───────────────┘
                                         │
                          ┌──────────────▼───────────────┐
+                         │  app/services/realtime/*     │  WebSocket 连接表（按 game_id 分组）
+                         │  manager.py                  │  广播 / presence / 断线清理
+                         └──────────────┬───────────────┘
+                                        │
+                         ┌──────────────▼───────────────┐
                          │  app/services/mahjong/*      │  领域层：纯函数规则引擎
                          │  tiles.py + rules.py         │  （Go 版在 go-engine/ 同构实现）
                          └──────────────┬───────────────┘
@@ -139,15 +147,16 @@ app/
 ├── main.py                 # create_app() 工厂 + lifespan（选存储 / 包缓存）+ CORS + 异常处理器
 ├── core/                   # config.py（DATABASE_URL / REDIS_URL / CACHE_* / JWT_*）/ errors.py / security.py（JWT）
 ├── schemas/                # Pydantic 请求 / 响应模型（只做格式校验）
-├── api/                    # deps.py（select_storage / CurrentSeat）/ router.py / routes/{auth,games,mahjong,calc,health}.py
+├── api/                    # deps.py（select_storage / CurrentSeat）/ router.py / routes/{auth,games,mahjong,calc,health,ws}.py
 └── services/
     ├── repository/         # base.py（抽象+纯函数）/ store.py（内存）/ sql.py（SQL）/ redis.py（Redis）
     ├── cache/              # cache_aside.py（CachedGameRepository 装饰器）
+    ├── realtime/           # manager.py（WebSocket 连接表 + 广播）
     └── mahjong/            # tiles.py / rules.py（纯函数引擎）
 go-engine/                  # Go 实现 + 对拍 + benchmark + HTTP 压测器
 scripts/                    # bench_http.py（Python 版压测，用于对照客户端瓶颈）
-tests/                      # 197 个用例：算法 74 + API 47 + 持久化/SQL/Redis 42 + 鉴权 20 + 缓存 14
-docs/                       # 工程约定 / 调研 / 面经 / 简历话术 / 部署 / 大厂计划 / ADR / 每日任务
+tests/                      # 218 个用例：算法 74 + API 47 + 持久化/SQL/Redis 42 + 鉴权 20 + 缓存 14 + WebSocket 21
+docs/                       # 工程约定 / 调研 / 面经 / 简历话术 / 部署 / 大厂计划 / 第二项目 / ADR / 每日任务
 ```
 
 ## 6. API
@@ -170,6 +179,7 @@ docs/                       # 工程约定 / 调研 / 面经 / 简历话术 / �
 | GET | `/api/v1/games/{game_id}` | 查询对局（只暴露庄家手牌） |
 | POST | `/api/v1/games/{game_id}/discard` | 打牌（牌进牌河、轮转下家、下家摸牌） |
 | POST | `/api/v1/calc/{op}` | 四则运算，`op ∈ add / subtract / multiply / divide` |
+| WS | `/api/v1/ws/games/{game_id}?seat=east` | 实时对局：连接后收 `connected`/`presence`/`state`，可发 `ping`/`get_state`/`discard`；握手失败用 close code 4400/4401/4403/4404 |
 
 ### curl 示例
 
@@ -255,7 +265,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/games \
 ## 9. 测试、压测与真实环境验证
 
 ```bash
-python -m pytest          # 197 passed, 11 skipped（MySQL 门控用例默认跳过）
+python -m pytest          # 218 passed, 11 skipped（MySQL 门控用例默认跳过）
+python -m pytest --cov=app --cov-report=term-missing   # 覆盖率 93%
 python -m ruff check app tests scripts
 cd go-engine && go vet ./... && gofmt -l . && go test ./... -count=1
 ```
@@ -270,6 +281,7 @@ cd go-engine && go vet ./... && gofmt -l . && go test ./... -count=1
 | `tests/test_redis_repository.py` | 13 | fakeredis 下的 create/get/discard/clear、TTL、LRU、15 路并发、三实现一致性 |
 | `tests/test_cache_aside.py` | 14 | 命中/未命中、不缓存空值、TTL 过期、写后删、建局写穿、**缓存故障降级**、命中率统计、前缀隔离 |
 | `tests/test_auth.py` | 20 | 默认关闭时行为不变、无/坏/过期令牌 401、座位不匹配 403、只返回自己手牌、`/auth/token` 503 与签发 |
+| `tests/test_ws.py` | 21 | 连接/presence/双客户端广播、两局隔离、ping-pong、非法消息不断线、业务错误不误广播、断线清理、空闲超时、握手 4400/4401/4403/4404 |
 | `tests/test_mysql_integration.py` | 11（门控） | 真实 MySQL：建表、全流程、重启可查、CAS 409、同 seed 一致性、EXPLAIN 前置数据 |
 | `go-engine/mahjong/*_test.go` | 15 函数 / 54 run | 39 条精选 fixture + 2000 条随机对拍 + 正负样本自检 |
 
@@ -317,6 +329,19 @@ go run ./cmd/loadgen -base http://127.0.0.1:8000 \
 - 内存 store **不能** `--workers N`（每个进程一份字典 → 状态分裂），要横向扩必须切 SQL/Redis——这是设计约束，不是性能结论。
 
 `scripts/bench_http.py` 是同一套压测的 Python 版，故意保留来对比：**客户端在 20 并发左右就自己先饱和**（实测 280 RPS、p50 36ms），正好说明「压测器选型也会影响结论」。
+
+### 9.3 测试覆盖率（93%）与「没覆盖的是什么」
+
+```bash
+python -m pytest --cov=app --cov-report=term-missing
+```
+
+- 总覆盖率 **93%**（1415 条语句 / 漏 94 行），CI 里用 `--cov-fail-under=85` 兜底，防止覆盖率悄悄退化；
+- 没覆盖的主要是三**类**，属于「难测 / 防御性分支」，不是漏测：
+  1. `main.py` 的 lifespan 异常分支（Redis/SQL 初始化失败时的报错路径）——需要注入启动失败才能触发；
+  2. `sql.py` 的 MySQL 专属分支——本地默认套件不连 MySQL，这部分由 CI 的 `mysql-integration` job 用真实 5.7 覆盖；
+  3. `realtime/manager.py` 里「广播时某个连接发送失败」与 `ws.py` 的部分协议错误分支——需要构造并发时序/异常注入。
+- 面试口径：「我没有为了让数字好看去写无意义断言；漏掉的是防御分支和需要真实数据库的路径，后者我在 CI 里用 service 容器补上了。」
 
 ## 10. Docker
 
@@ -381,7 +406,10 @@ docker compose up --build
 - [x] 压测工具与报告（Go 压测器 + Python 版对照）
 - [x] cache-aside 缓存层（读缓存 + 写后删 + 故障降级 + 命中率）
 - [x] 鉴权（JWT）与「只能看自己手牌」的座位绑定
+- [x] WebSocket 多人实时对局（连接表 / presence / 心跳 / 空闲超时）
+- [x] 覆盖率门禁（93%，CI `--cov-fail-under=85`）
 - [ ] 令牌注销 / `jti` 黑名单（当前无状态不可撤销）
+- [ ] 多实例 WebSocket 广播（Redis pub/sub，当前单进程连接表）
 - [ ] 缓存击穿防护（单飞 / 逻辑过期）与 TTL 抖动
 - [ ] WebSocket 多人实时对局
 - [ ] 番型计算与出牌合法性完整化（碰 / 杠 / 吃）
@@ -400,6 +428,8 @@ docker compose up --build
 | [docs/adr-0002-持久化选型.md](docs/adr-0002-持久化选型.md) | 双实现、SQLite→MySQL、JSON vs 拆表、乐观锁 vs 悲观锁 |
 | [docs/adr-0003-redis存储与缓存.md](docs/adr-0003-redis存储与缓存.md) | Redis 存储设计、WATCH 乐观锁、LRU、fakeredis 边界、cache-aside 演进 |
 | [docs/adr-0004-cache-aside.md](docs/adr-0004-cache-aside.md) | cache-aside 取舍、写后删 vs 写时更新、TTL 与穿透/击穿/雪崩、多实例一致性边界 |
+| [docs/adr-0005-websocket实时对局.md](docs/adr-0005-websocket实时对局.md) | WS vs 轮询/SSE、连接表、心跳与假死连接、多实例 pub/sub 扩展路径、背压 |
+| [docs/第二项目选题-20261102.md](docs/第二项目选题-20261102.md) | 短链 / 秒杀 / 限流 / IM 四个候选的设计、工作量与面试讲法 |
 | [docs/市场调研-广深实习-20261101.md](docs/市场调研-广深实习-20261101.md) | 广深中小厂实习要求、薪资、与本项目的差距矩阵 |
 | [docs/部署指南.md](docs/部署指南.md) | 本机 / Docker / 云服务器 / 免费平台部署与排错 |
 | [docs/engineering-contract.md](docs/engineering-contract.md) | 工程约定：目录结构、牌编码、API 契约、代码规范、验收标准 |
