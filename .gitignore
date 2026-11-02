@@ -26,3 +26,6 @@ dist/
 
 # ---- 本地数据（sqlite 等）----
 data/
+
+# ---- pytest 临时目录（Windows 下可能落在仓库根）----
+pytest-of-*/
