@@ -5,7 +5,7 @@
 
 ![Swagger UI](docs/images/swagger-full.png)
 
-**一句话数据**：Python 侧 **163 个测试全绿**（另有 11 个 MySQL 门控集成用例）、**三种存储实现**（内存 / SQL / Redis）行为一致、**真实 MySQL 5.7.44 实测**并修掉两个只在 MySQL 暴露的缺陷、Go 侧 **15 个测试函数 + 2000 手随机牌逐条对拍**、判胡 Go 比 Python 快 **45×–100×**（0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root + CI 全绿。
+**一句话数据**：Python 侧 **197 个测试全绿**（另有 11 个 MySQL 门控集成用例）、**三种存储实现**（内存 / SQL / Redis）行为一致、**cache-aside 读缓存**（命中率可观测、缓存故障自动降级）、**JWT 鉴权 + 座位绑定**（默认关闭，开一个环境变量即生效）、**真实 MySQL 5.7.44 实测**并修掉两个只在 MySQL 暴露的缺陷、Go 侧 **15 个测试函数 + 2000 手随机牌逐条对拍**、判胡 Go 比 Python 快 **45×–100×**（0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root + CI 三路（Python / MySQL / Go）全绿。
 
 ---
 
@@ -30,10 +30,12 @@
 | **三种存储（可切换）** | 默认内存（零依赖）；`DATABASE_URL` → SQLAlchemy 2.0 异步（SQLite 验证 / **MySQL 5.7 实测**）；`REDIS_URL` → Redis（Hash + EXPIRE + WATCH + ZSET 做 LRU） |
 | **并发正确性** | 打牌走事务 + `version` 乐观锁（MySQL 方言额外 `SELECT ... FOR UPDATE`；Redis 用 `WATCH/MULTI`），冲突返回 409 `GAME_CONFLICT` |
 | **MySQL 死锁修复** | 隔离实例上实测出 1213 死锁，用「维护事务与插入事务分离 + 有限次退避重试」修到 0 逃逸 |
+| **JWT 鉴权 + 座位绑定** | `JWT_SECRET` 非空即启用：`/api/v1/games*` 需 Bearer Token，只能看/打自己座位；关闭时行为与之前完全一致 |
+| **cache-aside 读缓存** | `CACHE_REDIS_URL` + `CACHE_TTL_SECONDS` 启用：读走 Redis、打牌后删 key；缓存故障自动降级、命中率/错误数可观测 |
 | **Go 对照实现** | `go-engine/` 纯标准库重写同一套规则，与 Python 逐条对拍 + benchmark 对比 |
 | **压测工具** | `go-engine/cmd/loadgen`（Go 压测器）+ `scripts/bench_http.py`（Python 版），输出 RPS / p50 / p90 / p99 |
 | 四则运算 | 保留最基础的计算器接口，用来演示统一错误信封与参数校验 |
-| 工程化 | Pydantic v2 校验、统一错误码、依赖注入、pytest（163 用例）、ruff、Docker、GitHub Actions |
+| 工程化 | Pydantic v2 校验、统一错误码、依赖注入、pytest（197 用例）、ruff、Docker、GitHub Actions（Python / MySQL / Go 三路） |
 
 ## 3. 5 分钟跑起来
 
@@ -83,9 +85,10 @@ go run ./cmd/bench                         # 打印每个用例的 ns/op、µs/o
 | 数据校验 | Pydantic v2 | 请求 / 响应模型，字段级校验与示例 |
 | 配置 | pydantic-settings | 环境变量 / `.env` 覆盖 |
 | 持久化 | SQLAlchemy 2.0（异步）+ aiosqlite / aiomysql | 内存 / SQL / Redis 三实现，SQLite 与 MySQL 5.7 都实测过 |
-| 缓存/存储 | redis-py（asyncio） | Hash 存快照 + EXPIRE + WATCH/MULTI + ZSET 做 LRU |
+| 缓存/存储 | redis-py（asyncio） | Hash 存快照 + EXPIRE + WATCH/MULTI + ZSET 做 LRU；另作 cache-aside 读缓存 |
+| 鉴权 | PyJWT（HS256） | 座位令牌、座位绑定，无状态、默认关闭 |
 | 服务端 | Uvicorn | ASGI 服务器 |
-| 测试 | pytest + httpx + fakeredis | 163 个用例；MySQL 集成用例用 `MYSQL_TEST_URL` 门控 |
+| 测试 | pytest + httpx + fakeredis | 197 个用例；MySQL 集成用例用 `MYSQL_TEST_URL` 门控 |
 | 代码规范 | ruff | line-length 100 |
 | 跨语言实现 | Go 1.25（纯标准库） | 规则引擎对照实现 + benchmark + 压测器 |
 | 容器 | Docker（python:3.12-slim） | 非 root 运行 + HEALTHCHECK |
@@ -99,12 +102,17 @@ go run ./cmd/bench                         # 打印每个用例的 ns/op、µs/o
                          │  health / calc / mahjong / games
                          └──────────────┬───────────────┘
                                         │ Depends 注入（只依赖抽象 GameRepository）
-                         ┌──────────────▼───────────────┐
+                         ┌──────────────┬───────────────┐
                          │  app/services/repository/*   │  仓库层：统一接口 + 三种实现
                          │  base.py   抽象 + 共用纯函数  │
                          │  store.py  内存（asyncio.Lock）│
                          │  sql.py    SQL（乐观锁/行锁）  │
                          │  redis.py  Redis（WATCH/EXPIRE）│
+                         └──────────────┬───────────────┘
+                                        │ 可选：外面再包一层
+                         ┌──────────────▼───────────────┐
+                         │  app/services/cache/*        │  cache-aside：读走缓存、写后删键
+                         │  cache_aside.py（装饰器）     │  命中/降级可观测
                          └──────────────┬───────────────┘
                                         │
                          ┌──────────────▼───────────────┐
@@ -128,16 +136,17 @@ go run ./cmd/bench                         # 打印每个用例的 ns/op、µs/o
 
 ```
 app/
-├── main.py                 # create_app() 工厂 + lifespan（按配置选存储）+ CORS + 异常处理器
-├── core/                   # config.py（DATABASE_URL / REDIS_URL）/ errors.py（统一信封）
+├── main.py                 # create_app() 工厂 + lifespan（选存储 / 包缓存）+ CORS + 异常处理器
+├── core/                   # config.py（DATABASE_URL / REDIS_URL / CACHE_* / JWT_*）/ errors.py / security.py（JWT）
 ├── schemas/                # Pydantic 请求 / 响应模型（只做格式校验）
-├── api/                    # deps.py（select_storage）/ router.py / routes/*.py
+├── api/                    # deps.py（select_storage / CurrentSeat）/ router.py / routes/{auth,games,mahjong,calc,health}.py
 └── services/
     ├── repository/         # base.py（抽象+纯函数）/ store.py（内存）/ sql.py（SQL）/ redis.py（Redis）
+    ├── cache/              # cache_aside.py（CachedGameRepository 装饰器）
     └── mahjong/            # tiles.py / rules.py（纯函数引擎）
 go-engine/                  # Go 实现 + 对拍 + benchmark + HTTP 压测器
 scripts/                    # bench_http.py（Python 版压测，用于对照客户端瓶颈）
-tests/                      # 163 个用例：算法 74 + API 47 + 持久化/SQL/Redis 31 + MySQL 门控 11
+tests/                      # 197 个用例：算法 74 + API 47 + 持久化/SQL/Redis 42 + 鉴权 20 + 缓存 14
 docs/                       # 工程约定 / 调研 / 面经 / 简历话术 / 部署 / 大厂计划 / ADR / 每日任务
 ```
 
@@ -153,6 +162,7 @@ docs/                       # 工程约定 / 调研 / 面经 / 简历话术 / �
 |---|---|---|
 | GET | `/` | 服务简介（名称 / 版本 / 文档入口） |
 | GET | `/healthz` | 健康检查：状态、版本、运行秒数 |
+| POST | `/api/v1/auth/token` | 换取座位令牌（`JWT_SECRET` 为空时返回 503 `AUTH_DISABLED`） |
 | GET | `/api/v1/mahjong/tiles` | 全副牌信息：136 张、34 种、固定顺序清单 |
 | POST | `/api/v1/mahjong/win-check` | 胡牌判定 |
 | POST | `/api/v1/mahjong/tenpai` | 听牌计算 |
@@ -192,6 +202,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/games \
 | 400 | `NOT_YOUR_TURN` | 还没轮到该座位出牌 |
 | 404 | `GAME_NOT_FOUND` | 对局不存在（或已被 TTL 清理 / 上限淘汰） |
 | 409 | `GAME_CONFLICT` | SQL / Redis 模式下并发写同一局，乐观锁冲突 |
+| 401 | `TOKEN_MISSING` / `TOKEN_INVALID` / `TOKEN_EXPIRED` | 启用了 JWT 但令牌缺失 / 非法 / 过期（响应带 `WWW-Authenticate`） |
+| 403 | `SEAT_MISMATCH` | 令牌座位与要操作的座位不一致 |
+| 503 | `AUTH_DISABLED` | 调 `/auth/token` 但该实例没开鉴权 |
 | 422 | —（FastAPI 默认） | 请求体格式错误，返回字段级 `loc / msg` |
 | 500 | `INTERNAL_ERROR` | 兜底异常，对外不泄漏内部细节 |
 
@@ -242,8 +255,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/games \
 ## 9. 测试、压测与真实环境验证
 
 ```bash
-python -m pytest          # 163 passed, 11 skipped（MySQL 门控用例默认跳过）
-python -m ruff check app tests
+python -m pytest          # 197 passed, 11 skipped（MySQL 门控用例默认跳过）
+python -m ruff check app tests scripts
 cd go-engine && go vet ./... && gofmt -l . && go test ./... -count=1
 ```
 
@@ -255,6 +268,8 @@ cd go-engine && go vet ./... && gofmt -l . && go test ./... -count=1
 | `tests/test_persistence.py` | 18 | 内存/SQL 双实现、跨实例读取、重启后可查、乐观锁并发、DSN 掩码 |
 | `tests/test_sql_repository.py` | 11 | 重试策略只重试 1213/1205、退避上限与抖动、best_effort 降级、亚毫秒时间精度、TTL 边界、20 并发建局 |
 | `tests/test_redis_repository.py` | 13 | fakeredis 下的 create/get/discard/clear、TTL、LRU、15 路并发、三实现一致性 |
+| `tests/test_cache_aside.py` | 14 | 命中/未命中、不缓存空值、TTL 过期、写后删、建局写穿、**缓存故障降级**、命中率统计、前缀隔离 |
+| `tests/test_auth.py` | 20 | 默认关闭时行为不变、无/坏/过期令牌 401、座位不匹配 403、只返回自己手牌、`/auth/token` 503 与签发 |
 | `tests/test_mysql_integration.py` | 11（门控） | 真实 MySQL：建表、全流程、重启可查、CAS 409、同 seed 一致性、EXPLAIN 前置数据 |
 | `go-engine/mahjong/*_test.go` | 15 函数 / 54 run | 39 条精选 fixture + 2000 条随机对拍 + 正负样本自检 |
 
@@ -317,7 +332,7 @@ docker compose up --build
 - 先 `COPY pyproject.toml` 再装依赖，**只改源码时不重复下载依赖**（层缓存）；
 - 以 `appuser`（uid 10001）**非 root** 运行；
 - `HEALTHCHECK` 用标准库 `urllib` 打 `/healthz`，镜像里不需要 curl；
-- 需要 MySQL / Redis 时，驱动在可选 extra 里（`[mysql]` / `[redis]`），构建时按需安装并传环境变量；只跑 demo 时镜像是纯内存、零外部依赖。
+- 需要 MySQL / Redis 时不用重新构建：镜像已同时安装 `[mysql]` 与 `[redis]` 两个可选 extra，直接传环境变量即可（容器内主机名用服务名，如 `redis`、`mysql`）；
 
 ## 11. 配置
 
@@ -331,6 +346,11 @@ docker compose up --build
 | `REDIS_URL` | 空 | 非空 → Redis 存储（优先级最高），如 `redis://127.0.0.1:6379/0` |
 | `DATABASE_URL` | 空 | 非空 → SQL 存储，如 `sqlite+aiosqlite:///./data/mahjong.db` 或 `mysql+aiomysql://...` |
 | `DB_ECHO` | `false` | 是否打印 SQL（调试用） |
+| `CACHE_REDIS_URL` | 空 | **缓存用** Redis（与 `REDIS_URL` 的存储角色区分），如 `redis://127.0.0.1:6379/1` |
+| `CACHE_TTL_SECONDS` | `30` | 读缓存 TTL；`0` = 关闭缓存 |
+| `JWT_SECRET` | 空 | 空 = **关闭鉴权**；非空则对 `/api/v1/games*` 启用 Bearer + 座位绑定 |
+| `JWT_ALGORITHM` | `HS256` | 签名算法 |
+| `JWT_EXPIRE_MINUTES` | `720` | 令牌有效期（分钟） |
 
 三者优先级：`REDIS_URL` > `DATABASE_URL` > 内存；启动日志会打印实际选中的实现（DSN 密码已掩码）。
 
@@ -348,6 +368,9 @@ docker compose up --build
 | JSON 列存手牌 / 牌河 | 对局是聚合根，一次读写整局；拆表会 N+1 | 分析需求走旁路事件表（CQRS 读模型） |
 | 引擎同步调用 | 微秒级纯 CPU，套线程池反而多一次切换 | CPU 密集时拆独立 worker / 多进程 |
 | 业务错误用 400 而非 500 | 422 给「格式错」，400 给「业务规则不满足」 | 按 code 埋点统计错误分布 |
+| JWT 无状态、**默认关闭** | demo 零配置；开启后多实例都可验签，不用共享 session | 生产缩短过期 + refresh token，`jti` 黑名单做注销，密钥轮换带 `kid` |
+| cache-aside「写后删」而不是「写时更新」 | 删是幂等的、写放大最小；并发写顺序反转时写时更新会留旧值 | 更强一致性用「缓存带 version + Lua 比较覆盖」或 binlog 订阅 |
+| 缓存故障全降级 | 缓存只是加速层，挂了不能把 500 抛给用户 | 指标接 Prometheus 告警，命中率过低再考虑多级缓存 |
 
 ## 13. Roadmap
 
@@ -356,8 +379,10 @@ docker compose up --build
 - [x] 真实 MySQL 5.7 实测 + 两个缺陷修复（Float 精度 / 1213 死锁）
 - [x] Go 引擎对照实现 + benchmark
 - [x] 压测工具与报告（Go 压测器 + Python 版对照）
-- [ ] cache-aside 缓存层（读缓存 + 写库删缓存）
-- [ ] 鉴权（JWT）与「只能看自己手牌」
+- [x] cache-aside 缓存层（读缓存 + 写后删 + 故障降级 + 命中率）
+- [x] 鉴权（JWT）与「只能看自己手牌」的座位绑定
+- [ ] 令牌注销 / `jti` 黑名单（当前无状态不可撤销）
+- [ ] 缓存击穿防护（单飞 / 逻辑过期）与 TTL 抖动
 - [ ] WebSocket 多人实时对局
 - [ ] 番型计算与出牌合法性完整化（碰 / 杠 / 吃）
 - [ ] 前端牌桌 demo（可选）
@@ -374,6 +399,7 @@ docker compose up --build
 | [docs/mysql-实测报告.md](docs/mysql-实测报告.md) | MySQL 5.7 实测：EXPLAIN、死锁原文、两个缺陷的修复与复测 |
 | [docs/adr-0002-持久化选型.md](docs/adr-0002-持久化选型.md) | 双实现、SQLite→MySQL、JSON vs 拆表、乐观锁 vs 悲观锁 |
 | [docs/adr-0003-redis存储与缓存.md](docs/adr-0003-redis存储与缓存.md) | Redis 存储设计、WATCH 乐观锁、LRU、fakeredis 边界、cache-aside 演进 |
+| [docs/adr-0004-cache-aside.md](docs/adr-0004-cache-aside.md) | cache-aside 取舍、写后删 vs 写时更新、TTL 与穿透/击穿/雪崩、多实例一致性边界 |
 | [docs/市场调研-广深实习-20261101.md](docs/市场调研-广深实习-20261101.md) | 广深中小厂实习要求、薪资、与本项目的差距矩阵 |
 | [docs/部署指南.md](docs/部署指南.md) | 本机 / Docker / 云服务器 / 免费平台部署与排错 |
 | [docs/engineering-contract.md](docs/engineering-contract.md) | 工程约定：目录结构、牌编码、API 契约、代码规范、验收标准 |
