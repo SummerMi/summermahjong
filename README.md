@@ -5,7 +5,7 @@
 
 ![Swagger UI](docs/images/swagger-full.png)
 
-**一句话数据**：Python 侧 **139 个测试全绿**、Go 侧 **15 个测试函数 + 2000 手随机牌与 Python 逐条对拍一致**、判胡算法 Go 比 Python 快 **45×–100×**（`go test -bench` 实测，0 allocs/op）、Docker 非 root 运行 + CI 全绿。
+**一句话数据**：Python 侧 **139 个测试全绿**、Go 侧 **15 个测试函数 + 2000 手随机牌与 Python 逐条对拍一致**、判胡算法 Go 比 Python 快 **45×–100×**（`go test -bench` 实测，0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root 运行 + CI 全绿。
 
 ---
 
@@ -29,6 +29,7 @@
 | **持久化（可切换）** | 默认内存（零依赖）；配置 `DATABASE_URL` 后切 SQLAlchemy 2.0 异步实现（SQLite 验证 / MySQL 生产），重启后对局仍可查 |
 | **并发正确性** | 打牌走事务 + `version` 乐观锁（MySQL 方言额外 `SELECT ... FOR UPDATE`），冲突返回 409 `GAME_CONFLICT` |
 | **Go 对照实现** | `go-engine/` 纯标准库重写同一套规则，与 Python 逐条对拍 + benchmark 对比 |
+| **压测工具** | `go-engine/cmd/loadgen`（Go 压测器）+ `scripts/bench_http.py`（Python 版），输出 RPS / p50 / p90 / p99 |
 | 四则运算 | 保留最基础的计算器接口，用来演示统一错误信封与参数校验 |
 | 工程化 | Pydantic v2 校验、统一错误码、依赖注入、pytest、ruff、Docker、GitHub Actions |
 
@@ -123,7 +124,8 @@ app/
 └── services/
     ├── repository/         # base.py（抽象+纯函数）/ store.py（内存）/ sql.py（SQLAlchemy 异步）
     └── mahjong/            # tiles.py / rules.py（纯函数引擎）
-go-engine/                  # 同一套规则的 Go 实现 + 与 Python 对拍 + benchmark
+go-engine/                  # 同一套规则的 Go 实现 + 与 Python 对拍 + benchmark + HTTP 压测器
+scripts/                    # bench_http.py（Python 版压测，用于对照客户端瓶颈）
 tests/                      # 139 个用例：算法 74 + API 47 + 持久化 18
 docs/                       # 工程约定 / 调研 / 简历话术 / 部署指南 / 大厂计划 / ADR
 ```
@@ -246,6 +248,35 @@ CI：`.github/workflows/ci.yml` 在每次 push / PR 上跑 ruff + pytest（Pytho
 
 > 想自己验证上面这些数字：`python -m pytest`、`python -m ruff check app tests`、`cd go-engine && go test ./... && go test ./mahjong -bench . -benchmem -run '^$'`。
 
+### 9.2 HTTP 压测（本机 loopback，Go 客户端）
+
+```bash
+python -m uvicorn app.main:app --port 8000          # 另开一个终端
+cd go-engine
+go run ./cmd/loadgen -base http://127.0.0.1:8000 -path /healthz -c 100 -d 10s
+go run ./cmd/loadgen -base http://127.0.0.1:8000 \
+  -path /api/v1/mahjong/tenpai -method POST \
+  -body '{"hand":["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","1p","1p","2s"]}' -c 100 -d 10s
+```
+
+实测（单 worker、纯内存模式、Ryzen 7 7745HX、客户端与服务端同机）：
+
+| 场景 | 并发 | RPS | p50 | p99 |
+|---|---|---|---|---|
+| `GET /healthz` | 100 | **2888** | 32.2 ms | 73.7 ms |
+| `POST /mahjong/tenpai`（最重，34 次判胡） | 100 | **2511** | 38.9 ms | 50.6 ms |
+| `POST /mahjong/tenpai` | 10 | **2585** | 3.77 ms | 5.59 ms |
+| `POST /mahjong/win-check` | 50 | **3758** | 13.0 ms | 17.3 ms |
+
+怎么读这组数字：
+
+- 并发从 10 提到 100，`tenpai` 的 RPS 几乎不变（2585 → 2511），而 p50 从 3.8ms 涨到 39ms —— 说明**单 worker 已经打满，多出来的并发只是在排队**；
+- `win-check` 比 `tenpai` 快约 1.5 倍，符合「1 次判胡 vs 34 次判胡」的算法预期；
+- **口径**：同机 loopback、无 TLS、无反向代理，客户端和服务端抢同一颗 CPU，**不是生产 QPS**；生产要多 worker + 独立压测机（wrk / hey）复测；
+- 内存 store **不能** `--workers N`（每个进程一份字典 → 状态分裂），要横向扩必须切 SQL/Redis 后端——这是设计约束，不是性能结论。
+
+`scripts/bench_http.py` 是同一套压测的 Python 版，故意保留来对比：**客户端在 20 并发左右就自己先饱和**（实测 280 RPS、p50 36ms），正好说明「压测器选型也会影响结论」。
+
 ## 10. Docker
 
 ```bash
@@ -293,7 +324,7 @@ docker compose up --build
 
 - [x] 对局持久化（SQLAlchemy 双实现 + 乐观锁）
 - [x] Go 引擎对照实现 + benchmark
-- [ ] 压测报告（wrk/hey，RPS + p99）
+- [x] 压测工具与报告（Go 压测器 + Python 版对照）
 - [ ] Redis 缓存分支（cache-aside）+ ADR
 - [ ] 鉴权（JWT）与「只能看自己手牌」
 - [ ] WebSocket 多人实时对局
