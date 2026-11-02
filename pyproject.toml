@@ -44,6 +44,8 @@ dev = [
     "ruff>=0.6",
     # 测试里用 fakeredis 模拟 Redis，不需要真 Redis 进程；生产连真 Redis。
     "fakeredis>=2.23",
+    # 只用于 scripts/build_resume_docx.py 生成简历 docx，与运行时无关。
+    "python-docx>=1.1",
 ]
 
 [tool.setuptools.packages.find]

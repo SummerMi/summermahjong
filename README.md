@@ -423,7 +423,10 @@ docker compose up --build
 | [docs/面经高频题-20261102.md](docs/面经高频题-20261102.md) | 字节/腾讯/美团面经里的高频手撕题与八股清单（含打勾表） |
 | [docs/W1每日任务表-20261102.md](docs/W1每日任务表-20261102.md) | 第一周 7 天逐日任务（题号 + 八股 + 项目 + 复盘） |
 | [docs/目标公司投递清单-20261102.md](docs/目标公司投递清单-20261102.md) | P0/P1/P2 分层、入口、语言栈、投递节奏 |
-| [docs/简历与面试话术.md](docs/简历与面试话术.md) | 简历项目条目、18 题面试 Q&A、9 步演示脚本、诚实边界 |
+| [docs/简历与面试话术.md](docs/简历与面试话术.md) | 简历项目条目、23 题面试 Q&A、9 步演示脚本、诚实边界 |
+| [docs/简历-成品-20261102.md](docs/简历-成品-20261102.md) · [docx](docs/简历-成品-20261102.docx) · [pdf](docs/简历-成品-20261102.pdf) | **一页简历成品**（Markdown 是唯一真相，`python scripts/build_resume_docx.py` 重新生成 docx） |
+| [docs/投递包-邮件与自我介绍模板-20261102.md](docs/投递包-邮件与自我介绍模板-20261102.md) | 邮件正文、App 招呼语、60 秒自我介绍、HR 面 6 问、面试后跟进 |
+| [docs/W1每日任务表-20261102.md](docs/W1每日任务表-20261102.md) · [W2](docs/W2每日任务表-20261102.md) | 逐日任务（题号 + 八股 + 项目 + 复盘打卡） |
 | [docs/mysql-实测报告.md](docs/mysql-实测报告.md) | MySQL 5.7 实测：EXPLAIN、死锁原文、两个缺陷的修复与复测 |
 | [docs/adr-0002-持久化选型.md](docs/adr-0002-持久化选型.md) | 双实现、SQLite→MySQL、JSON vs 拆表、乐观锁 vs 悲观锁 |
 | [docs/adr-0003-redis存储与缓存.md](docs/adr-0003-redis存储与缓存.md) | Redis 存储设计、WATCH 乐观锁、LRU、fakeredis 边界、cache-aside 演进 |
