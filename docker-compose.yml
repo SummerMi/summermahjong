@@ -1,5 +1,8 @@
 # 本地一键起服务：docker compose up --build
 # 打开 http://127.0.0.1:8000/ 或 http://127.0.0.1:8000/docs
+#
+# 镜像已同时安装 [mysql] / [redis] 两个可选 extra，所以容器里可以直接用
+# MySQL / Redis 分支，只要把下面注释掉的环境变量打开即可。
 services:
   api:
     build:
@@ -10,12 +13,22 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # 全部可用环境变量覆盖，见 app/core/config.py
+      # 全部可用环境变量覆盖，见 app/core/config.py 与 .env.example
       APP_NAME: "广东麻将（推倒胡）后端服务"
       VERSION: "0.1.0"
       CORS_ORIGINS: "*"
       MAX_GAMES: "100"
       GAME_TTL_SECONDS: "7200"
+      # ── 按需打开（三个都留空 = 纯内存模式，零依赖）──
+      # Redis 当存储（容器内用服务名 redis，不是 127.0.0.1）
+      # REDIS_URL: "redis://redis:6379/0"
+      # 关系库（SQLite 或 MySQL）
+      # DATABASE_URL: "mysql+aiomysql://root:change-me@mysql:3306/mahjong"
+      # Redis 当缓存（cache-aside，建议与存储用不同 db 编号）
+      # CACHE_REDIS_URL: "redis://redis:6379/1"
+      # CACHE_TTL_SECONDS: "30"
+      # JWT 鉴权（留空 = 关闭；非空则对 /api/v1/games* 启用 Bearer + 座位绑定）
+      # JWT_SECRET: "please-change-me"
     healthcheck:
       test:
         - CMD
@@ -28,10 +41,8 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Redis 对局仓库（可选分支）：本地想真跑 Redis 时 `docker compose up redis`，
-  # 再用 REDIS_URL=redis://127.0.0.1:6379/0 启动 API，lifespan 会自动切到 RedisGameRepository。
-  # 注意：api 服务默认仍是内存模式（零依赖），没有把 REDIS_URL 加进 api 的环境变量，
-  # 因为镜像按 pyproject 主依赖构建、未安装可选的 redis 包（见 docs/adr-0003）。
+  # Redis：既可以对局存储（REDIS_URL），也可以做读缓存（CACHE_REDIS_URL）。
+  # 本地真跑：docker compose up -d redis，再按上面的注释打开对应环境变量。
   redis:
     image: redis:7-alpine
     container_name: gd-mahjong-redis

@@ -15,10 +15,21 @@ WORKDIR /app
 
 # 先只复制依赖清单（pyproject.toml），让「安装依赖」层能命中缓存：
 # 只改源码时不会重复下载依赖。
+#
+# 依赖来源仍然只有 pyproject.toml 一个真相，这里额外把 [mysql] / [redis] 两个可选
+# extra 也装上——否则镜像里跑不了 MySQL / Redis 分支（容器只装主依赖是常见坑）。
 COPY pyproject.toml ./
-RUN python -c "import pathlib, tomllib; deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text('utf-8'))['project']['dependencies']; pathlib.Path('/tmp/requirements.txt').write_text('\n'.join(deps) + '\n', 'utf-8')" \
-    && pip install --no-cache-dir -r /tmp/requirements.txt \
-    && rm -f /tmp/requirements.txt
+RUN python - <<'PY' && pip install --no-cache-dir -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
+import pathlib, tomllib
+
+data = tomllib.loads(pathlib.Path("pyproject.toml").read_text("utf-8"))
+deps = list(data["project"]["dependencies"])
+extras = data["project"].get("optional-dependencies", {})
+for extra in ("mysql", "redis"):
+    deps.extend(extras.get(extra, []))
+pathlib.Path("/tmp/requirements.txt").write_text("\n".join(deps) + "\n", "utf-8")
+print(f"安装 {len(deps)} 条依赖（含 mysql / redis extras）")
+PY
 
 # 非 root 用户运行，降低容器被打穿后的影响面
 RUN useradd --create-home --uid 10001 appuser

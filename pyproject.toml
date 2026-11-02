@@ -24,6 +24,8 @@ dependencies = [
     # 保证「切数据库」只需要改环境变量、不需要重装环境。
     "sqlalchemy[asyncio]>=2.0,<3.0",
     "aiosqlite>=0.20",  # SQLite 异步驱动（本地验证 / 测试）；生产 MySQL 换 aiomysql
+    # JWT 鉴权（JWT_SECRET 为空时完全不用，但依赖常驻，保证「开鉴权只改一个环境变量」）
+    "pyjwt>=2.8,<3.0",
 ]
 
 [project.optional-dependencies]

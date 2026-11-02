@@ -6,6 +6,7 @@ on:
   pull_request:
 
 jobs:
+  # 1) Python：静态检查 + 默认测试套件（内存模式，零外部依赖）
   lint-test:
     name: ruff + pytest (Python 3.12)
     runs-on: ubuntu-latest
@@ -24,7 +25,84 @@ jobs:
           pip install -e ".[dev]"
 
       - name: 代码风格检查（ruff）
-        run: python -m ruff check app tests
+        run: python -m ruff check app tests scripts
 
-      - name: 单元测试（pytest）
+      - name: 单元测试（pytest，默认跳过 MySQL 门控用例）
         run: python -m pytest
+
+  # 2) 真实 MySQL：把测试里被 skip 的 11 个门控用例真的跑起来
+  #    这些用例验证的是「SQLite 全绿、MySQL 才暴露」的那类差异（列类型、行锁、死锁重试）
+  mysql-integration:
+    name: pytest + MySQL 5.7（真实数据库）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: mahjong
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖（含 MySQL 驱动）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,mysql]"
+
+      - name: 等待 MySQL 就绪
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -proot --silent; then
+              echo "MySQL is up"; break
+            fi
+            echo "waiting for mysql... ($i)"; sleep 2
+          done
+
+      - name: 跑 MySQL 门控集成用例
+        env:
+          MYSQL_TEST_URL: mysql+aiomysql://root:root@127.0.0.1:3306/mahjong
+        run: python -m pytest tests/test_mysql_integration.py -v
+
+  # 3) Go：规则引擎的对拍测试 + vet + gofmt（之前 CI 只跑 Python，Go 侧无人守门）
+  go-test:
+    name: go vet + gofmt + go test（Go 1.25）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: go-engine/go.mod
+
+      - name: 格式检查（gofmt）
+        working-directory: go-engine
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化：$unformatted"
+            exit 1
+          fi
+
+      - name: 静态检查（go vet）
+        working-directory: go-engine
+        run: go vet ./...
+
+      - name: 单元测试（含与 Python 生成 fixture 的对拍）
+        working-directory: go-engine
+        run: go test ./... -count=1
