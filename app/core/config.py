@@ -61,6 +61,35 @@ class Settings(BaseSettings):
     )
     db_echo: bool = Field(default=False, description="是否打印 SQLAlchemy 生成的 SQL（调试用）")
 
+    # ── 鉴权（JWT，可选；默认关闭以保持 demo 零配置）──
+    jwt_secret: str = Field(
+        default="",
+        description=(
+            "JWT 签名密钥。留空 = **关闭鉴权**（demo/CI 默认，行为与之前完全一致）；"
+            "设为非空字符串则对 /api/v1/games* 启用 Bearer Token，且座位绑定"
+            "（只能操作自己座位的对局，查询只返回自己的手牌）"
+        ),
+    )
+    jwt_algorithm: str = Field(default="HS256", description="JWT 签名算法（HS256 足够 demo，无需额外加密库）")
+    jwt_expire_minutes: int = Field(default=720, ge=1, description="Token 有效期（分钟），默认 12 小时")
+
+    # ── 缓存（cache-aside，可选）──
+    cache_redis_url: str = Field(
+        default="",
+        description=(
+            "**缓存用** Redis 连接串（与 REDIS_URL 的「存储」角色区分开）。非空且 cache_ttl_seconds>0 时，"
+            "对局读走缓存、写后删缓存。留空 = 不开缓存；注意 REDIS_URL 是「Redis 当存储」，两者不要混用"
+        ),
+    )
+    cache_ttl_seconds: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "对局读缓存 TTL（秒）。0 = 关闭缓存；仅当 cache_redis_url 非空时生效："
+            "读走 Redis 缓存、写（打牌）后删缓存，是 cache-aside 的最小实现"
+        ),
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的 ``cors_origins`` 解析成中间件需要的列表。"""

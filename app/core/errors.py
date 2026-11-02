@@ -27,10 +27,18 @@ logger = logging.getLogger(__name__)
 class AppError(Exception):
     """业务异常基类：一个异常对应「一个稳定错误码 + 一个 HTTP 状态码」。"""
 
-    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int = 400,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.code = code
         self.message = message
         self.status_code = status_code
+        # 少数异常需要额外的响应头（如 401 的 WWW-Authenticate），其余为 None
+        self.headers = headers
         super().__init__(message)
 
 
@@ -62,6 +70,68 @@ class TileNotInHandError(AppError):
         super().__init__("TILE_NOT_IN_HAND", f"手牌中没有 {tile}，无法打出", status_code=400)
 
 
+class TokenMissingError(AppError):
+    """请求缺少 Bearer 令牌（没带 Authorization 头，或头里不是 Bearer 方案）。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "TOKEN_MISSING",
+            "缺少令牌：请在请求头 Authorization: Bearer <token> 中携带座位令牌",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Bearer realm="mahjong"'},
+        )
+
+
+class TokenInvalidError(AppError):
+    """令牌不可信：签名错误、格式错误、缺少字段或用途不对。"""
+
+    def __init__(self, reason: str = "签名或格式不正确") -> None:
+        super().__init__(
+            "TOKEN_INVALID",
+            f"令牌无效：{reason}",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        )
+
+
+class TokenExpiredError(AppError):
+    """令牌已过有效期（``exp`` 早于当前时间），需要重新获取。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "TOKEN_EXPIRED",
+            "令牌已过期，请重新获取",
+            status_code=401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", error_description="The access token expired"'
+                )
+            },
+        )
+
+
+class SeatMismatchError(AppError):
+    """座位越权：请求体里的座位与令牌绑定的座位不是同一个。"""
+
+    def __init__(self, token_seat: str, body_seat: str) -> None:
+        super().__init__(
+            "SEAT_MISMATCH",
+            f"令牌座位为 {token_seat}，不能以 {body_seat} 的身份打牌",
+            status_code=403,
+        )
+
+
+class AuthDisabledError(AppError):
+    """本实例没有配置 JWT 密钥，鉴权整体关闭（不签发也不校验令牌）。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AUTH_DISABLED",
+            "本实例未启用鉴权（JWT_SECRET 为空），无需也无法获取令牌",
+            status_code=503,
+        )
+
+
 def error_payload(code: str, message: str) -> dict[str, dict[str, str]]:
     """构造统一错误信封。"""
     return {"error": {"code": code, "message": message}}
@@ -76,7 +146,11 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         exc.code,
         exc.message,
     )
-    return JSONResponse(status_code=exc.status_code, content=error_payload(exc.code, exc.message))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload(exc.code, exc.message),
+        headers=exc.headers,
+    )
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:

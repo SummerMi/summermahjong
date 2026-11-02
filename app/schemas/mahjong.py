@@ -109,15 +109,21 @@ class GameCreateRequest(BaseModel):
 
 
 class GameCreateResponse(BaseModel):
-    """创建对局成功后的完整牌局快照（四家手牌都可见）。"""
+    """创建对局成功后的牌局快照。
+
+    ``hands`` 的类型是「手牌数组或张数」：
+
+    - 鉴权关闭（默认）：四家手牌都给完整数组，便于本地演示与调试；
+    - 鉴权开启：只给令牌座位自己的完整手牌，其余座位给张数，防止“看穿全场”。
+    """
 
     game_id: str = Field(..., description="对局 id（uuid4().hex）", examples=["9f2c1d..."])
     wall_remaining: int = Field(..., description="牌墙剩余张数（发完牌后为 83）", examples=[83])
     current_player: Seat = Field(..., description="当前该谁出牌", examples=["east"])
-    hands: dict[str, list[str]] = Field(
+    hands: dict[str, list[str] | int] = Field(
         ...,
-        description="四家手牌：east（庄家）14 张，其余三家各 13 张",
-        examples=[{"east": ["1m", "2m"], "south": ["3p"], "west": [], "north": []}],
+        description="各家手牌：完整数组表示可见手牌，整数表示该座位手牌张数（被遮蔽）",
+        examples=[{"east": ["1m", "2m"], "south": 13, "west": 13, "north": 13}],
     )
     created_at: datetime = Field(..., description="对局创建时间（UTC，ISO 8601）")
 

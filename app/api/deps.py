@@ -21,12 +21,16 @@ from typing import Annotated, Literal
 from fastapi import Depends, Request
 
 from app.core.config import Settings
-from app.services.repository.base import GameRepository
+from app.core.errors import TokenInvalidError, TokenMissingError
+from app.core.security import decode_access_token
+from app.services.repository.base import SEATS, GameRepository
 
 __all__ = [
+    "CurrentSeat",
     "SettingsDep",
     "StorageKind",
     "StoreDep",
+    "get_current_seat",
     "get_settings",
     "get_store",
     "select_storage",
@@ -78,6 +82,46 @@ def get_store(request: Request) -> GameRepository:
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 """配置依赖：``settings: SettingsDep``。"""
+
+
+def get_current_seat(request: Request, settings: SettingsDep) -> str | None:
+    """FastAPI 依赖：从 ``Authorization: Bearer <token>`` 解析出当前座位。
+
+    两种模式（由 ``JWT_SECRET`` 决定）：
+
+    - **鉴权关闭**（``jwt_secret`` 为空，demo / CI 默认）：直接返回 ``None``，
+      不读请求头也不报错，所以老接口的行为与引入 JWT 之前完全一致；
+    - **鉴权开启**：必须带合法座位令牌，缺失 / 格式错 / 无效 / 过期分别抛
+      401 ``TOKEN_MISSING`` / ``TOKEN_INVALID`` / ``TOKEN_INVALID`` / ``TOKEN_EXPIRED``。
+
+    座位名再回查一次 :data:`SEATS`：令牌签名正确不代表 ``sub`` 合法（例如用同一密钥
+    签了别的用途令牌），宁可 401 也不要带着非法座位进入业务逻辑。
+
+    :raises TokenMissingError: 没带 Authorization 头。
+    :raises TokenInvalidError: 头格式不是 Bearer、签名/格式错误、座位非法。
+    :raises TokenExpiredError: 令牌过期。
+    """
+    if not settings.jwt_secret:
+        # 鉴权关闭：不校验、不报错，返回 None 让路由走「老行为」分支
+        return None
+
+    authorization = request.headers.get("Authorization")
+    if not authorization:
+        raise TokenMissingError()
+
+    scheme, _, token = authorization.partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise TokenInvalidError("Authorization 头格式必须是 Bearer <token>")
+
+    seat = decode_access_token(token, settings)
+    if seat not in SEATS:
+        raise TokenInvalidError(f"令牌中的座位 {seat!r} 不是合法座位")
+    return seat
+
+
+CurrentSeat = Annotated[str | None, Depends(get_current_seat)]
+"""当前请求的座位依赖：鉴权关闭时为 ``None``，开启时由令牌的 ``sub`` 决定。"""
 
 StoreDep = Annotated[GameRepository, Depends(get_store)]
 """对局仓库依赖：``store: StoreDep``；内存 / SQL / Redis 实现由配置决定。"""
