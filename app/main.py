@@ -66,6 +66,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         2. 否则 ``DATABASE_URL`` 非空 → SQL 仓库（建异步 engine + ``create_all``）；
         3. 都为空 → 内存 ``GameStore``（默认零依赖，测试 / demo 行为完全不变）。
 
+        **缓存层（可选）**：若 ``CACHE_REDIS_URL`` 非空且 ``CACHE_TTL_SECONDS > 0``，再在存储外面包一层
+        ``CachedGameRepository``（cache-aside：读走缓存、打牌后删缓存）。注意这与 ``REDIS_URL``
+        （Redis 当存储）是两种角色，存储本就是 Redis 时不再套缓存。
+
         关闭时：Redis 只 ``aclose()`` 连接、SQL 只 ``dispose()`` 连接池，**数据都保留**；
         只有内存实现才 ``clear()``（进程退出内存本就会丢，显式清空避免测试残留）。
         """
@@ -108,20 +112,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ttl_seconds=settings.game_ttl_seconds,
             )
             storage = "memory"
+        # ── cache-aside 读缓存（可选）──
+        # 在「存储」外面再包一层「缓存」：读走 Redis、打牌后删 key，详见 app/services/cache/aside.py。
+        # 存储本身就是 Redis（REDIS_URL）时不再套缓存——那等于自己缓存自己，没有意义。
+        cache_client: Any | None = None
+        cache_info = "none"
+        if settings.cache_redis_url and settings.cache_ttl_seconds > 0:
+            if kind == "redis":
+                logger.warning(
+                    "已同时配置 REDIS_URL（Redis 当存储）与 CACHE_REDIS_URL（Redis 当缓存）："
+                    "存储已是 Redis，跳过缓存层（见 README「两个 Redis 变量不是一回事」）"
+                )
+            else:
+                try:
+                    from app.services.cache.cache_aside import CachedGameRepository
+                    from app.services.repository.redis import create_redis_client
+                except ImportError as exc:  # pragma: no cover - 只在缺可选依赖时触发
+                    raise RuntimeError(
+                        "配置了 CACHE_REDIS_URL 但未安装 redis 依赖：请执行 "
+                        "uv pip install --python .venv/Scripts/python.exe 'redis>=5'"
+                    ) from exc
+                cache_client = create_redis_client(settings.cache_redis_url)
+                application.state.store = CachedGameRepository(
+                    application.state.store,
+                    cache_client,
+                    ttl_seconds=settings.cache_ttl_seconds,
+                )
+                cache_info = f"{mask_dsn(settings.cache_redis_url)} ttl={settings.cache_ttl_seconds}s"
+                logger.info("已启用 cache-aside 读缓存 cache=%s", cache_info)
+
         application.state.db_engine = engine
         application.state.redis_client = redis_client
+        application.state.cache_redis_client = cache_client
         application.state.started_at = time.monotonic()
         logger.info(
-            "服务启动 name=%s version=%s storage=%s max_games=%d ttl=%ds",
+            "服务启动 name=%s version=%s storage=%s cache=%s max_games=%d ttl=%ds",
             settings.app_name,
             settings.version,
             storage,
+            cache_info,
             settings.max_games,
             settings.game_ttl_seconds,
         )
         try:
             yield
         finally:
+            # 先放缓存连接，再放存储连接（缓存只是加速层，先摘掉更安全）
+            if cache_client is not None:
+                await cache_client.aclose()
+                logger.info("服务关闭，缓存 Redis 连接已释放")
             if redis_client is not None:
                 await redis_client.aclose()
                 logger.info("服务关闭，Redis 连接已释放（对局数据保留在 Redis）")
