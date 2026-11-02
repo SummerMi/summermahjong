@@ -48,8 +48,10 @@ def _set_cn_font(run, name: str = "微软雅黑", size: float = 10.0, bold: bool
 
 
 def _add_rich_text(paragraph, text: str, size: float = 10.0, base_bold: bool = False) -> None:
-    """把一行里的 `**粗体**` 拆成多个 run；Markdown 的反引号直接去掉（docx 里不做代码样式）。"""
-    text = text.replace("`", "")
+    """把一行里的 `**粗体**` 拆成多个 run；反引号与单星号（斜体标记）直接去掉。"""
+    text = text.replace("`", "").replace("*", "")
+    if not text:
+        return
     cursor = 0
     for match in INLINE_BOLD.finditer(text):
         if match.start() > cursor:
@@ -113,30 +115,30 @@ def build(md_path: Path, out_path: Path) -> None:
 
     doc = Document()
     section = doc.sections[0]
-    section.top_margin = Cm(1.1)
-    section.bottom_margin = Cm(1.1)
-    section.left_margin = Cm(1.5)
-    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(0.9)
+    section.bottom_margin = Cm(0.9)
+    section.left_margin = Cm(1.3)
+    section.right_margin = Cm(1.3)
 
     # 姓名
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.paragraph_format.space_after = Pt(1)
-    _set_cn_font(title.add_run(name), size=18, bold=True)
+    _set_cn_font(title.add_run(name), size=17, bold=True)
 
     # 求职意向
     if subtitle:
         sub = doc.add_paragraph()
         sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
         sub.paragraph_format.space_after = Pt(4)
-        _set_cn_font(sub.add_run(subtitle), size=9.5)
+        _set_cn_font(sub.add_run(subtitle), size=9)
 
     for kind, text in blocks:
         if kind == "h2":
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(7)
+            p.paragraph_format.space_before = Pt(5)
             p.paragraph_format.space_after = Pt(2)
-            _set_cn_font(p.add_run(text), size=11.5, bold=True)
+            _set_cn_font(p.add_run(text), size=10.8, bold=True)
             # 小节标题下加一条细横线（用下边框实现）
             pPr = p._p.get_or_add_pPr()
             borders = pPr.makeelement(qn("w:pBdr"), {})
@@ -149,16 +151,16 @@ def build(md_path: Path, out_path: Path) -> None:
             p = doc.add_paragraph()
             p.paragraph_format.space_before = Pt(4)
             p.paragraph_format.space_after = Pt(1)
-            _add_rich_text(p, text, size=10, base_bold=True)
+            _add_rich_text(p, text, size=9.6, base_bold=True)
         elif kind == "bullet":
             p = doc.add_paragraph(style="List Bullet")
             p.paragraph_format.space_after = Pt(1)
-            p.paragraph_format.line_spacing = 1.04
-            _add_rich_text(p, text, size=9.5)
+            p.paragraph_format.line_spacing = 1.0
+            _add_rich_text(p, text, size=9.0)
         else:
             p = doc.add_paragraph()
             p.paragraph_format.space_after = Pt(1)
-            _add_rich_text(p, text, size=9.5)
+            _add_rich_text(p, text, size=9.0)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
