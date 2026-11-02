@@ -27,3 +27,27 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+
+  # Redis 对局仓库（可选分支）：本地想真跑 Redis 时 `docker compose up redis`，
+  # 再用 REDIS_URL=redis://127.0.0.1:6379/0 启动 API，lifespan 会自动切到 RedisGameRepository。
+  # 注意：api 服务默认仍是内存模式（零依赖），没有把 REDIS_URL 加进 api 的环境变量，
+  # 因为镜像按 pyproject 主依赖构建、未安装可选的 redis 包（见 docs/adr-0003）。
+  redis:
+    image: redis:7-alpine
+    container_name: gd-mahjong-redis
+    ports:
+      - "6379:6379"
+    # appendonly yes：开启 AOF，容器重启后对局仍在（Redis 仓库重启可查的前提）
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis-data:

@@ -8,11 +8,13 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.api.deps import select_storage
 from app.api.router import api_router
 from app.api.routes.health import router as health_router
 from app.core.config import Settings
@@ -33,7 +35,8 @@ FastAPI 项目：
 
 - **规则引擎**：胡牌判定（4 面子 + 1 将 / 七对）、听牌计算；
 - **对局管理**：可切换的对局仓库（默认内存 asyncio 锁 + TTL；配置 `DATABASE_URL` 后切
-  SQLAlchemy 异步关系库，SQLite 验证 / MySQL 生产），相同 seed 可复现牌局；
+  SQLAlchemy 异步关系库，SQLite 验证 / MySQL 生产；配置 `REDIS_URL` 后切 Redis：
+  Hash 存快照、`WATCH/MULTI` 乐观锁、ZSET 做 LRU），相同 seed 可复现牌局；
 - **工程化**：Pydantic v2 校验、统一错误信封、依赖注入、pytest + ruff + Docker + CI。
 
 错误统一返回 `{"error": {"code": "...", "message": "..."}}`；请求体格式错误保留 422。
@@ -57,13 +60,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         """启动时按配置选择存储实现，关闭时释放资源。
 
-        ``settings.database_url`` 为空 → 内存 ``GameStore``（零依赖，测试 / demo 默认）；
-        非空 → 建异步 engine + ``create_all`` 建表，用 ``SqlGameRepository``。
-        关闭时内存实现清空状态，SQL 实现只 ``dispose`` 连接池、**保留数据**
-        （所以重启后 game_id 仍然查得到）。
+        优先级（见 :func:`app.api.deps.select_storage`）：
+
+        1. ``REDIS_URL`` 非空 → Redis 仓库（跨进程共享、Hash + EXPIRE + ZSET LRU）；
+        2. 否则 ``DATABASE_URL`` 非空 → SQL 仓库（建异步 engine + ``create_all``）；
+        3. 都为空 → 内存 ``GameStore``（默认零依赖，测试 / demo 行为完全不变）。
+
+        关闭时：Redis 只 ``aclose()`` 连接、SQL 只 ``dispose()`` 连接池，**数据都保留**；
+        只有内存实现才 ``clear()``（进程退出内存本就会丢，显式清空避免测试残留）。
         """
         engine: AsyncEngine | None = None
-        if settings.database_url:
+        redis_client: Any | None = None
+        kind = select_storage(settings)
+
+        if kind == "redis":
+            # 延迟 import：redis 是可选依赖（见 pyproject 的 [redis] extra），
+            # 内存 / SQL 模式下即使没装 redis 包也应能正常启动。
+            try:
+                from app.services.repository.redis import (
+                    RedisGameRepository,
+                    create_redis_client,
+                )
+            except ImportError as exc:  # pragma: no cover - 只在缺可选依赖时触发
+                raise RuntimeError(
+                    "配置了 REDIS_URL 但未安装 redis 依赖：请执行 "
+                    "uv pip install --python .venv/Scripts/python.exe 'redis>=5'"
+                ) from exc
+            redis_client = create_redis_client(settings.redis_url)
+            application.state.store = RedisGameRepository(
+                redis_client,
+                max_games=settings.max_games,
+                ttl_seconds=settings.game_ttl_seconds,
+            )
+            storage = f"redis({mask_dsn(settings.redis_url)})"
+        elif kind == "sql":
             engine = create_engine_from_url(settings.database_url, echo=settings.db_echo)
             await init_models(engine)
             application.state.store = SqlGameRepository(
@@ -79,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             storage = "memory"
         application.state.db_engine = engine
+        application.state.redis_client = redis_client
         application.state.started_at = time.monotonic()
         logger.info(
             "服务启动 name=%s version=%s storage=%s max_games=%d ttl=%ds",
@@ -91,7 +122,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            if engine is not None:
+            if redis_client is not None:
+                await redis_client.aclose()
+                logger.info("服务关闭，Redis 连接已释放（对局数据保留在 Redis）")
+            elif engine is not None:
                 await engine.dispose()
                 logger.info("服务关闭，数据库连接池已释放（对局数据持久化保留）")
             else:

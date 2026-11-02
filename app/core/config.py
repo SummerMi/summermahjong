@@ -10,6 +10,8 @@
 - ``DATABASE_URL``（为空 = 内存模式；例如 ``sqlite+aiosqlite:///./games.db``
   或生产 ``mysql+aiomysql://user:pass@host:3306/mahjong``）
 - ``DB_ECHO``（打印 SQL，排查问题时开）
+- ``REDIS_URL``（非空则切换为 Redis 对局仓库，优先级高于 ``DATABASE_URL``；
+  例如 ``redis://127.0.0.1:6379/0``；留空 = 不启用 Redis）
 """
 
 from pydantic import Field
@@ -47,6 +49,14 @@ class Settings(BaseSettings):
             "数据库连接串（SQLAlchemy 异步 DSN）。留空 = 纯内存模式（零依赖，demo/CI 默认）；"
             "例如 sqlite+aiosqlite:///./games.db（本地验证）"
             "或 mysql+aiomysql://user:pass@127.0.0.1:3306/mahjong（生产）"
+        ),
+    )
+    redis_url: str = Field(
+        default="",
+        description=(
+            "Redis 连接串（redis://[:password@]host:port/db）。非空则切换为 Redis 对局仓库，"
+            "优先级高于 database_url；留空 = 不启用 Redis（默认内存或 SQL 分支）。"
+            "对局的闲置 TTL 复用 game_ttl_seconds，不再单独设置缓存 TTL，避免两套过期时间打架"
         ),
     )
     db_echo: bool = Field(default=False, description="是否打印 SQLAlchemy 生成的 SQL（调试用）")
