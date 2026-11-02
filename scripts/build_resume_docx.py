@@ -94,7 +94,12 @@ def _parse(md_text: str) -> tuple[str, str, list[tuple[str, str]]]:
             if in_body and not skip:
                 blocks.append(("h2", title))
             continue
-        if not in_body or skip:
+        if not in_body:
+            # 正文之前、姓名/求职意向之后的普通行 = 联系方式行（之前漏渲染了）
+            if stripped and not stripped.startswith(("#", ">", "---")):
+                blocks.append(("contact", stripped))
+            continue
+        if skip:
             continue
         if stripped.startswith("### "):
             blocks.append(("h3", stripped[4:].strip()))
@@ -134,7 +139,12 @@ def build(md_path: Path, out_path: Path) -> None:
         _set_cn_font(sub.add_run(subtitle), size=9)
 
     for kind, text in blocks:
-        if kind == "h2":
+        if kind == "contact":
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_after = Pt(6)
+            _set_cn_font(p.add_run(text.replace("**", "")), size=9)
+        elif kind == "h2":
             p = doc.add_paragraph()
             p.paragraph_format.space_before = Pt(5)
             p.paragraph_format.space_after = Pt(2)
