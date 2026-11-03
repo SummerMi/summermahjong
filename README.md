@@ -424,7 +424,8 @@ docker compose up --build
 | [docs/W1每日任务表-20261102.md](docs/W1每日任务表-20261102.md) | 第一周 7 天逐日任务（题号 + 八股 + 项目 + 复盘） |
 | [docs/目标公司投递清单-20261102.md](docs/目标公司投递清单-20261102.md) | P0/P1/P2 分层、入口、语言栈、投递节奏 |
 | [docs/简历与面试话术.md](docs/简历与面试话术.md) | 简历项目条目、23 题面试 Q&A、9 步演示脚本、诚实边界 |
-| [docs/简历-成品-20261102.md](docs/简历-成品-20261102.md) · [docx](docs/简历-成品-20261102.docx) · [pdf](docs/简历-成品-20261102.pdf) | **一页简历成品**（Markdown 是唯一真相；改完跑 `bash scripts/build_resume_pdf.sh` 一条命令重建 docx + PDF + 预览） |
+| [docs/简历-成品-20261102.md](docs/简历-成品-20261102.md) · [docx](docs/简历-成品-20261102.docx) · [pdf](docs/简历-成品-20261102.pdf) | **一页简历成品（投递版）**：RuoYi-AI 平台 + 个人产品（eyjamini/eyami）+ 麻将 + IEEE；改完跑 `bash scripts/build_resume_pdf.sh` |
+| [docs/简历-魔方简历版-20261103.pdf](docs/简历-魔方简历版-20261103.pdf) · [预览](docs/简历-魔方简历版预览-20261103.png) · [JSON 备份](docs/简历-魔方简历备份-20261103.json) | 魔方简历（magicv.art）里那份的导出：同样内容、另一种版式，可在自己浏览器「导入简历」继续改 |
 | [docs/RuoYiAI-讲清楚手册-20261103.md](docs/RuoYiAI-讲清楚手册-20261103.md) | **把 RuoYi-AI 讲清楚**：四层架构图、三条链路（流式/工具层/模型切换）、五个真实踩坑、名词小抄、白板 5 步、十问快答、90 秒与 3 分钟逐字稿 |
 | [docs/项目包装-RuoYiAI-20261103.md](docs/项目包装-RuoYiAI-20261103.md) | **RuoYi-AI 项目包装方案**：代码事实清单、简历 bullet（4 条/3 条）、60 秒讲法、10 问追问预案、诚实边界、如何桥接 Go+Agent 岗 |
 | [docs/Go后端与Agent岗位调研-20261103.md](docs/Go后端与Agent岗位调研-20261103.md) | **「Go 后端 + Agent 开发」交叉岗位调研**：三类岗位、真实 JD 清单、技能矩阵、与本机项目的匹配度与补齐计划 |
