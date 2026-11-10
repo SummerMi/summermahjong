@@ -91,7 +91,7 @@ func TestDecomposeShapeDetail(t *testing.T) {
 	}
 }
 
-// TestDecomposeSevenPairs 覆盖七对子，包括「4 张相同算两对」的豪华七对。
+// TestDecomposeSevenPairs 覆盖七对子（日麻严格语义：必须是 7 种不同的对子）。
 func TestDecomposeSevenPairs(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -99,8 +99,7 @@ func TestDecomposeSevenPairs(t *testing.T) {
 		winning string
 	}{
 		{"普通七对", "11m 22m 33m 44p 55p 66s 11z", "1z"},
-		{"四张算两对", "1111m 22p 33p 44s 55s 11z", "1m"},
-		{"两组四张算四对", "1111m 2222p 33s 44s 11z", "2p"},
+		{"字牌七对", "11z 22z 33z 44z 55z 66z 77z", "1z"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +123,47 @@ func TestDecomposeSevenPairs(t *testing.T) {
 			}
 			verifyWinShape(t, hand, shape, winning)
 		})
+	}
+}
+
+// TestSevenPairsStrictVsCompat 定案七对语义：
+//
+//   - 日麻严格（默认 / StrictOptions）：4 张相同不能算两对，必须 7 种不同的对子；
+//     所以「1111m + 5 对」在默认模式下**不是**七对和牌。
+//   - v1 兼容（CompatOptions）：4 张相同算两对，同样的手牌判七对和牌，
+//     用于让 fastapi/go-engine 的 v1 金标 fixture 继续对拍。
+//
+// 这正是 task-4 要求「默认严格、v1 回归用兼容模式」的落点。
+func TestSevenPairsStrictVsCompat(t *testing.T) {
+	hands := []string{
+		"1111m 22p 33p 44s 55s 11z", // 4 + 5 对 = 14 张
+		"1111m 2222p 33s 44s 11z",   // 两组四张 + 3 对
+	}
+	for _, text := range hands {
+		t.Run(text, func(t *testing.T) {
+			hand := mustParseHand(t, text)
+			winning := hand[0]
+
+			if shape, ok := Decompose(hand, nil, winning); ok {
+				t.Fatalf("严格模式不应把四张相同算两对，实际拆解出 %+v", shape)
+			}
+			shape, ok := DecomposeWithOptions(hand, nil, winning, CompatOptions())
+			if !ok {
+				t.Fatal("v1 兼容模式应判七对和牌")
+			}
+			if shape.Pattern != PatternSevenPairs {
+				t.Fatalf("兼容模式 Pattern = %q，期望 %q", shape.Pattern, PatternSevenPairs)
+			}
+		})
+	}
+
+	// 13 张豪华七对听：1111m 22p 33p 44s 55s E，兼容模式向听 0；严格模式不是 0。
+	tenpai := mustParseHand(t, "1111m 22p 33p 44s 55s 1z")
+	if got := ShantenWithOptions(tenpai, 0, CompatOptions()); got != 0 {
+		t.Fatalf("兼容模式向听 = %d，期望 0", got)
+	}
+	if got := Shanten(tenpai, 0); got == 0 {
+		t.Fatalf("严格模式下 4 张相同不算两对，向听不应为 0（实际 %d）", got)
 	}
 }
 

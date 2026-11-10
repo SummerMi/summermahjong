@@ -11,7 +11,8 @@
    "v1 wait 用例期望「听牌列表」；新契约没有 WaitingTiles，回归测试用 Decompose 反推听牌后逐项对比。",
    "v1 invalid 用例在新接口里表达为：Decompose 返回 ok=false、Shanten 返回 ShantenInvalid(-2)。",
    "v1 用 0m 表示未知牌；日麻里 0m 是赤 5m，故转换为 '?' 哨兵（tile.Kind 越界），保留「非法输入」语义。",
-   "win 用例的 winning 字段取 tiles 最后一张，仅用于确定待ち类型，不参与牌型回归。"
+   "win 用例的 winning 字段取 tiles 最后一张，仅用于确定待ち类型，不参与牌型回归。",
+   "七对语义：v1 金标采用 v1/中国规则「4 张相同算两对」，回归测试统一传 Options（CompatOptions()）；句点引擎默认是严格日麻七对。"
   ]
  },
  "cases": [

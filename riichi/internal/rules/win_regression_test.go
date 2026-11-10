@@ -109,15 +109,15 @@ func TestV1FixtureWin(t *testing.T) {
 			winning := tileFromName(t, tc.Winning)
 
 			if tc.Invalid {
-				if shape, ok := Decompose(hand, nil, winning); ok {
+				if shape, ok := DecomposeWithOptions(hand, nil, winning, CompatOptions()); ok {
 					t.Fatalf("非法手牌不该判和，实际拆解出 %+v", shape)
 				}
-				if IsWinning(hand, nil, winning) {
+				if IsWinningWithOptions(hand, nil, winning, CompatOptions()) {
 					t.Fatal("IsWinning 对非法手牌应返回 false")
 				}
 				// 张数 13 的用例在 Shanten 看来是合法听牌形，其余非法输入必须被 Shanten 拒绝。
 				if tc.Size != tenpaiHandSize {
-					if got := Shanten(hand, 0); got != ShantenInvalid {
+					if got := ShantenWithOptions(hand, 0, CompatOptions()); got != ShantenInvalid {
 						t.Fatalf("Shanten = %d，期望 ShantenInvalid(%d)", got, ShantenInvalid)
 					}
 				}
@@ -129,23 +129,23 @@ func TestV1FixtureWin(t *testing.T) {
 				if tc.IsWin != nil && *tc.IsWin {
 					t.Fatal("fixture 的 pattern=null 与 is_win=true 矛盾")
 				}
-				if shape, ok := Decompose(hand, nil, winning); ok {
+				if shape, ok := DecomposeWithOptions(hand, nil, winning, CompatOptions()); ok {
 					t.Fatalf("v1 期望不和牌，实际拆解出 %+v", shape)
 				}
-				if IsWinning(hand, nil, winning) {
+				if IsWinningWithOptions(hand, nil, winning, CompatOptions()) {
 					t.Fatal("IsWinning 应为 false")
 				}
 				// 14 张里拿掉任意一张后，13 张手牌的向听数必须是合法值（0..6）。
 				for remove := range hand {
 					rest := append(cloneTiles(hand[:remove]), hand[remove+1:]...)
-					if got := Shanten(rest, 0); got < 0 {
+					if got := ShantenWithOptions(rest, 0, CompatOptions()); got < 0 {
 						t.Fatalf("拿掉第 %d 张后的向听数 = %d，期望 >= 0", remove, got)
 					}
 				}
 				return
 			}
 
-			shape, ok := Decompose(hand, nil, winning)
+			shape, ok := DecomposeWithOptions(hand, nil, winning, CompatOptions())
 			if !ok {
 				t.Fatalf("v1 期望判和，实际未判和（hand=%q）", tc.Hand)
 			}
@@ -155,13 +155,13 @@ func TestV1FixtureWin(t *testing.T) {
 			if tc.IsWin != nil && !*tc.IsWin {
 				t.Fatal("fixture 的 is_win 与 pattern 矛盾")
 			}
-			if !IsWinning(hand, nil, winning) {
+			if !IsWinningWithOptions(hand, nil, winning, CompatOptions()) {
 				t.Fatal("IsWinning 与 Decompose 结果不一致")
 			}
 			verifyWinShape(t, hand, shape, winning)
 
 			// 从和牌里拿掉一张和了牌，剩下的 13 张必须听牌（向听 0）。
-			if got := Shanten(removeOneKind(t, hand, winning.Kind), 0); got != 0 {
+			if got := ShantenWithOptions(removeOneKind(t, hand, winning.Kind), 0, CompatOptions()); got != 0 {
 				t.Fatalf("拿掉和了牌后的向听 = %d，期望 0", got)
 			}
 
@@ -189,7 +189,7 @@ func TestV1FixtureWait(t *testing.T) {
 			hand := parseTileNames(t, tc.Tiles)
 
 			if tc.Invalid {
-				if got := Shanten(hand, 0); got != ShantenInvalid {
+				if got := ShantenWithOptions(hand, 0, CompatOptions()); got != ShantenInvalid {
 					t.Fatalf("非法手牌的 Shanten = %d，期望 ShantenInvalid(%d)", got, ShantenInvalid)
 				}
 				return
@@ -206,7 +206,7 @@ func TestV1FixtureWait(t *testing.T) {
 					continue
 				}
 				candidate := append(cloneTiles(hand), tile.Tile{Kind: tile.Kind(kind)})
-				if _, ok := Decompose(candidate, nil, tile.Tile{Kind: tile.Kind(kind)}); ok {
+				if _, ok := DecomposeWithOptions(candidate, nil, tile.Tile{Kind: tile.Kind(kind)}, CompatOptions()); ok {
 					got = append(got, tile.Tile{Kind: tile.Kind(kind)})
 				}
 			}
@@ -215,7 +215,7 @@ func TestV1FixtureWait(t *testing.T) {
 				t.Fatalf("反推听牌 = %v，v1 期望 %v", got, want)
 			}
 
-			shanten := Shanten(hand, 0)
+			shanten := ShantenWithOptions(hand, 0, CompatOptions())
 			if len(want) > 0 && shanten != 0 {
 				t.Fatalf("有听牌时向听 = %d，期望 0", shanten)
 			}

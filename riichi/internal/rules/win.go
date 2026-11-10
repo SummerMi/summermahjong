@@ -23,7 +23,11 @@
 //     刻子为双碰、将牌为单骑；多种拆解时按「两面 > 嵌张 > 边张 > 双碰 > 单骑」取一种。
 package rules
 
-import "summermahjong/riichi/internal/tile"
+import (
+	"slices"
+
+	"summermahjong/riichi/internal/tile"
+)
 
 // Pattern 的取值（契约 §3）。
 const (
@@ -77,24 +81,37 @@ type Meld struct {
 	Tiles []tile.Tile
 }
 
-// MeldShape 是拆解出来的一组面子（顺子或刻子）。
+// MeldShape 是拆解出来的一组面子（顺子 / 刻子 / 杠）。
 //
-// 契约 §3 用 [3]tile.Tile 表示一组面子：顺子/刻子都是 3 张，
-// 杠在计符/计役时按刻子处理（第 4 张不参与面子形状），故这里也固定 3 张。
+// 契约 v1.2 起 Tiles 是变长切片：
+//   - 吃/碰为 3 张；
+//   - 杠为 4 张（fu/yaku 里按 len(Tiles)==4 识别杠，按 Kind 区分吃/碰/杠）。
+//
+// Open 表示这组面子是否是「副露（明面）」：
+//   - S3 的门清拆解恒为 false（暗刻/暗杠）；
+//   - S5 转换 game.Meld 时，吃/碰/大明杠 = true，暗杠 = false；
+//   - 符计算（明刻 2 / 暗刻 4、明杠 8 / 暗杠 16）与三暗刻/四暗刻判定都依赖它。
 type MeldShape struct {
 	Kind  string
-	Tiles [3]tile.Tile
+	Tiles []tile.Tile
+	Open  bool
 }
 
-// WinShape 是一次和牌拆解的完整结果（契约 §3）。
+// WinShape 是一次和牌拆解的完整结果（契约 §3，v1.2 新增 Tiles 字段）。
 //
 // 标准型：Melds 恰有 4 组、Jantou 为将牌；
 // 七对/国士：Melds 为空，Jantou 为和了牌本身（没有传统意义上的将牌分组）。
+//
+// Tiles 是构成这手和牌的全部物理牌（14 张；含杠的第 4 张，因此带杠时是 15 张）。
+// 计分需要它来统计宝牌、判断混一色/清一色/断幺九、以及七对形的花色役；
+// 仅靠 Melds+Jantou 无法还原七对/国士的全部牌。S5 手工构造 shape 时也应填上。
+// 若留空，依赖面子的判定仍可用，但七对/国士的花色役与宝牌统计会缺失。
 type WinShape struct {
 	Jantou  tile.Tile
 	Melds   []MeldShape
 	Wait    WaitType
 	Pattern string
+	Tiles   []tile.Tile
 }
 
 // IsWinning 报告手牌是否和牌；等价于 Decompose 的 ok。
@@ -102,11 +119,18 @@ type WinShape struct {
 // 参数约定与 Decompose 相同：hand 是完整的 14 张门清手牌（含和了牌），
 // melds 目前必须为空（S3 只支持门清）。
 func IsWinning(hand []tile.Tile, melds []Meld, winning tile.Tile) bool {
-	_, ok := Decompose(hand, melds, winning)
+	return IsWinningWithOptions(hand, melds, winning, Options{})
+}
+
+// IsWinningWithOptions 是带规则选项的 IsWinning，语义开关见 Options。
+func IsWinningWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opts Options) bool {
+	_, ok := DecomposeWithOptions(hand, melds, winning, opts)
 	return ok
 }
 
 // Decompose 把手牌拆解成完整的和牌形状（标准型 / 七对 / 国士），并给出待ち类型。
+//
+// 使用默认规则（日麻严格七对语义）；需要 v1（中国规则）语义时用 DecomposeWithOptions。
 //
 // 参数约定：
 //   - hand：完整的 14 张门清手牌，**必须包含和了牌**（13 张听牌形请由上层补上和了牌后调用，
@@ -119,6 +143,15 @@ func IsWinning(hand []tile.Tile, melds []Meld, winning tile.Tile) bool {
 //
 // 牌型优先级与 v1 一致：标准型优先于七对（如 11223344556677m 返回 standard），国士不与前两者重叠。
 func Decompose(hand []tile.Tile, melds []Meld, winning tile.Tile) (WinShape, bool) {
+	return DecomposeWithOptions(hand, melds, winning, Options{})
+}
+
+// DecomposeWithOptions 是带规则选项的 Decompose。
+//
+// 唯一的语义开关是七对子口径（见 Options）：
+// 默认日麻严格语义「7 种不同的对子」；SevenPairsCompat=true 时按 v1 中国规则
+// 「4 张相同算两对」，用于 v1 金标对拍。
+func DecomposeWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opts Options) (WinShape, bool) {
 	// S3 只支持门清；副露后和牌的用例见 win_melds_test.go（S5 实现后启用）。
 	if len(melds) != 0 {
 		return WinShape{}, false
@@ -137,16 +170,27 @@ func Decompose(hand []tile.Tile, melds []Meld, winning tile.Tile) (WinShape, boo
 	}
 
 	if shape, ok := decomposeStandard(c, winning); ok {
+		shape.Tiles = slices.Clone(hand)
 		applyAka(&shape, hand, winning)
 		return shape, true
 	}
-	if isSevenPairs(c) {
-		shape := WinShape{Jantou: winning, Wait: WaitTanki, Pattern: PatternSevenPairs}
+	if isSevenPairs(c, !opts.StrictSevenPairs()) {
+		shape := WinShape{
+			Jantou:  winning,
+			Wait:    WaitTanki,
+			Pattern: PatternSevenPairs,
+			Tiles:   slices.Clone(hand),
+		}
 		applyAka(&shape, hand, winning)
 		return shape, true
 	}
 	if isKokushi(c) {
-		shape := WinShape{Jantou: winning, Wait: WaitTanki, Pattern: PatternKokushi}
+		shape := WinShape{
+			Jantou:  winning,
+			Wait:    WaitTanki,
+			Pattern: PatternKokushi,
+			Tiles:   slices.Clone(hand),
+		}
 		applyAka(&shape, hand, winning)
 		return shape, true
 	}
@@ -213,7 +257,7 @@ func enumerateMeldShapes(rest counts, depth int, cur *[4]MeldShape, visit func([
 		next := rest
 		next[idx] -= 3
 		kind := tile.Kind(idx)
-		cur[depth] = MeldShape{Kind: MeldPon, Tiles: [3]tile.Tile{{Kind: kind}, {Kind: kind}, {Kind: kind}}}
+		cur[depth] = MeldShape{Kind: MeldPon, Tiles: []tile.Tile{{Kind: kind}, {Kind: kind}, {Kind: kind}}}
 		enumerateMeldShapes(next, depth+1, cur, visit)
 	}
 
@@ -223,7 +267,7 @@ func enumerateMeldShapes(rest counts, depth int, cur *[4]MeldShape, visit func([
 		next[idx]--
 		next[idx+1]--
 		next[idx+2]--
-		cur[depth] = MeldShape{Kind: MeldChi, Tiles: [3]tile.Tile{
+		cur[depth] = MeldShape{Kind: MeldChi, Tiles: []tile.Tile{
 			{Kind: tile.Kind(idx)},
 			{Kind: tile.Kind(idx + 1)},
 			{Kind: tile.Kind(idx + 2)},
@@ -248,32 +292,38 @@ func classifyWait(jantou tile.Tile, melds [4]MeldShape, winning tile.Kind) (Wait
 	}
 
 	for _, meld := range melds {
-		for pos, t := range meld.Tiles {
-			if t.Kind != winning {
-				continue
+		pos := -1
+		for i, t := range meld.Tiles {
+			if t.Kind == winning {
+				pos = i
+				break
 			}
-			if meld.Kind == MeldPon {
-				consider(WaitShanpon, 3)
-				continue
+		}
+		if pos < 0 {
+			continue
+		}
+		if meld.Kind != MeldChi {
+			// 刻子/杠：和了牌补成刻子 → 双碰。（抢杠和了时也走这里。）
+			consider(WaitShanpon, 3)
+			continue
+		}
+		switch pos {
+		case 0:
+			// 和了牌是顺子首张：若顺子是 789，则原来是 89 等 7 —— 边张；否则是两面。
+			if meld.Tiles[2].Kind.Number() == 9 {
+				consider(WaitPenchan, 2)
+			} else {
+				consider(WaitRyanmen, 0)
 			}
-			switch pos {
-			case 0:
-				// 和了牌是顺子首张：若顺子是 789，则原来是 89 等 7 —— 边张；否则是两面。
-				if meld.Tiles[2].Kind.Number() == 9 {
-					consider(WaitPenchan, 2)
-				} else {
-					consider(WaitRyanmen, 0)
-				}
-			case 1:
-				// 和了牌在顺子中间：嵌张。
-				consider(WaitKanchan, 1)
-			default:
-				// 和了牌是顺子末张：若顺子是 123，则原来是 12 等 3 —— 边张；否则是两面。
-				if meld.Tiles[0].Kind.Number() == 1 {
-					consider(WaitPenchan, 2)
-				} else {
-					consider(WaitRyanmen, 0)
-				}
+		case 1:
+			// 和了牌在顺子中间：嵌张。
+			consider(WaitKanchan, 1)
+		default:
+			// 和了牌是顺子末张：若顺子是 123，则原来是 12 等 3 —— 边张；否则是两面。
+			if meld.Tiles[0].Kind.Number() == 1 {
+				consider(WaitPenchan, 2)
+			} else {
+				consider(WaitRyanmen, 0)
 			}
 		}
 	}
@@ -319,17 +369,35 @@ func applyAka(shape *WinShape, hand []tile.Tile, winning tile.Tile) {
 
 // isSevenPairs 判断计数数组是否满足七对子。
 //
-// 沿用 v1 语义：4 张相同算两对（日麻严格规则里「四张相同」只算一对，这里以 v1 对拍为准）。
-// 14 张牌下「所有计数为偶数且总对数为 7」即七对。
-func isSevenPairs(c counts) bool {
-	pairs := 0
+// compat=false（日麻严格）：必须是 7 种不同的对子，每种恰好 2 张；
+// 4 张相同不能算两对（那 2 张多余的牌凑不出第 7 种对子）。
+//
+// compat=true（v1 / 中国规则）：沿用 v1 语义，4 张相同算两对，
+// 即「所有计数为偶数且总对数为 7」。
+func isSevenPairs(c counts, compat bool) bool {
+	if compat {
+		pairs := 0
+		for _, n := range c {
+			if n%2 != 0 {
+				return false
+			}
+			pairs += int(n / 2)
+		}
+		return pairs == sevenPairsCount
+	}
+
+	kinds := 0
 	for _, n := range c {
-		if n%2 != 0 {
+		switch n {
+		case 0:
+			continue
+		case 2:
+			kinds++
+		default:
 			return false
 		}
-		pairs += int(n / 2)
 	}
-	return pairs == sevenPairsCount
+	return kinds == sevenPairsCount
 }
 
 // isKokushi 判断计数数组是否满足国士无双（13 种幺九字牌全部出现且成对）。

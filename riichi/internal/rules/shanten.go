@@ -8,6 +8,8 @@ const ShantenInvalid = -2
 
 // Shanten 计算向听数：0 表示听牌，n>0 表示 n 向听；数值越小越接近和牌。
 //
+// 使用默认规则（日麻严格七对语义）；v1 兼容语义请用 ShantenWithOptions(..., CompatOptions())。
+//
 // 参数约定：
 //   - hand：门清手牌（不含副露的牌），张数必须满足 len(hand) + 3*meldCount == 13，
 //     即「13 张听牌形」：meldCount=0 时是 13 张，有 1 组副露时是 10 张，依此类推。
@@ -20,6 +22,11 @@ const ShantenInvalid = -2
 // 算法：分别计算「标准型 / 七对子 / 国士无双」的向听数并取最小值，与常见日麻引擎一致。
 // 副露后（meldCount>0）七对与国士不可能成立，只算标准型。
 func Shanten(hand []tile.Tile, meldCount int) int {
+	return ShantenWithOptions(hand, meldCount, Options{})
+}
+
+// ShantenWithOptions 是带规则选项的 Shanten（目前只影响七对子的向听公式）。
+func ShantenWithOptions(hand []tile.Tile, meldCount int, opts Options) int {
 	if meldCount < 0 || meldCount > meldsRequired {
 		return ShantenInvalid
 	}
@@ -33,7 +40,7 @@ func Shanten(hand []tile.Tile, meldCount int) int {
 
 	best := shantenStandard(c, meldCount)
 	if meldCount == 0 {
-		if s := shantenChiitoi(c); s < best {
+		if s := shantenChiitoi(c, !opts.StrictSevenPairs()); s < best {
 			best = s
 		}
 		if s := shantenKokushi(c); s < best {
@@ -126,15 +133,36 @@ func shantenStandard(c counts, meldCount int) int {
 
 // shantenChiitoi 计算七对子的向听数。
 //
-// 13 张听牌形下，若已经有 P 对（4 张相同算两对，与 Decompose 一致），
-// 就还差 7-P 对；每补一对需要 1 次进张，故向听数 = 6-P（P=6 时听牌）。
-// 手牌张数恒为 13，所以 P 最大为 6，结果落在 0..6。
-func shantenChiitoi(c counts) int {
-	pairs := 0
-	for _, n := range c {
-		pairs += int(n / 2)
+// compat=false（日麻严格）：七对需要 7 种不同的对子。记 P 为「已有对子的种数」
+// （4 张相同只算 1 对）、K 为不同牌种数，则向听数 = 6 - P + max(0, 7 - K)。
+//
+// compat=true（v1 中国规则）：4 张相同算两对，记 P 为总对数（count/2 之和），
+// 13 张牌下 P 最大为 6，向听数 = 6 - P。
+func shantenChiitoi(c counts, compat bool) int {
+	if compat {
+		pairs := 0
+		for _, n := range c {
+			pairs += int(n / 2)
+		}
+		return 6 - pairs
 	}
-	return 6 - pairs
+
+	pairs := 0
+	kinds := 0
+	for _, n := range c {
+		if n == 0 {
+			continue
+		}
+		kinds++
+		if n >= 2 {
+			pairs++
+		}
+	}
+	shanten := 6 - pairs
+	if kinds < sevenPairsCount {
+		shanten += sevenPairsCount - kinds
+	}
+	return shanten
 }
 
 // shantenKokushi 计算国士无双的向听数。
