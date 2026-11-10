@@ -520,7 +520,6 @@ code {
 }
 
 .thought-bar.hidden { display: none; }
-.thought-bar.demo { border-style: dashed; border-color: var(--warn); }
 
 .thought-agent { color: #8fe9c3; font-weight: 700; white-space: nowrap; }
 .thought-text { color: #d7ecdf; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

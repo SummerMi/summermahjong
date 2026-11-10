@@ -32,6 +32,13 @@
     game_end: '对局结束',
     unknown: '—',
   };
+  const PHASE_HINT = {
+    await_draw: '（摸牌）',
+    await_discard: '（打牌）',
+    await_response: '（响应）',
+  };
+  /** 服务端响应窗口超时（契约 v1.3：Config.ResponseTimeout 默认 5s）。仅用于本地倒计时展示。 */
+  const RESPONSE_TIMEOUT_MS = 5000;
   const LS_KEY = 'riichi-s11-demo';
   const LOG_LIMIT = 400;
 
@@ -181,6 +188,12 @@
     legal: [],
     lastDiscard: null,
 
+    // 响应窗口（契约 v1.3：{type:"responses", seq, seat, options[]}）
+    responses: null,
+    responseDeadline: 0,
+    responseTimer: null,
+    responseLeft: 0,
+
     // 交互
     pending: false,
     pendingTimer: null,
@@ -221,7 +234,6 @@
     dom.thoughtText = $('thought-text');
     dom.actions = $('actions');
     dom.actionHint = $('action-hint');
-    dom.btnDemoThought = $('btn-demo-thought');
     dom.btnDrop = $('btn-drop');
     dom.btnResync = $('btn-resync');
     dom.eventLog = $('event-log');
@@ -399,6 +411,11 @@
     S.legal = Array.isArray(data.legal_actions) ? data.legal_actions : [];
     S.handKnown = true;
     S.lastEventSeq = Math.max(S.lastEventSeq, S.seq);
+    // 权威状态说「已经不在响应阶段」→ 收起残留的响应按钮
+    // （S6 的超时路径不会发 response_window_end，只能靠状态同步兜底）
+    if (S.responses && S.phase !== 'await_response') {
+      clearResponseWindow(false);
+    }
   }
 
   /** 从回放事件里补「状态接口没有的」信息（庄家）+ 把历史写进日志。 */
@@ -714,6 +731,15 @@
         S.rtt = Math.max(0, Date.now() - num(msg.ts, Date.now()));
         updatePills();
         break;
+      case 'responses':
+        onResponses(msg);
+        break;
+      case 'response_window_end':
+        onResponseWindowEnd(msg);
+        break;
+      case 'agent_thought':
+        onAgentThought(msg);
+        break;
       case 'error':
         onServerError(msg);
         break;
@@ -725,15 +751,17 @@
 
   function onEvent(msg) {
     appendLog(msg, false);
-    if (msg.kind === 'agent_thought') {
-      showThought(msg.payload || {}, msg.seat, false);
-    }
     const seq = num(msg.seq, 0);
     if (seq > 0 && seq <= S.lastEventSeq) {
       return; // resume 重放的旧事件：日志留痕，状态不重复应用
     }
     S.lastEventSeq = Math.max(S.lastEventSeq, seq);
     S.seq = Math.max(S.seq, seq);
+    // 响应窗口只会由「响应动作 / 超时 / 结算」结束；窗口之后还能收到新事件
+    // 说明窗口已经结算（超时路径服务端不发 response_window_end）
+    if (S.responses && seq > S.responses.seq) {
+      clearResponseWindow(false);
+    }
     applyEvent(msg);
     if (S.pending) {
       S.pending = false;
@@ -773,6 +801,168 @@
       setBanner('令牌与「座位」不一致：请用 `-issue-token ' + S.seat + '` 重新签发令牌。', 'err');
     }
     renderActions();
+  }
+
+  // ── 响应窗口（契约 v1.3，task-14）────────────────────────────
+  //
+  // 服务端在「你可以对别人打出的牌做响应」时按座位推：
+  //   {"type":"responses","seq":43,"seat":1,"options":[{"kind":"ron","tile":"5m"}, ...]}
+  // 必须用 {"type":"action","seq":<同一个 seq>, "action":{...}} 回传；
+  // 窗口结束广播 {"type":"response_window_end","seq":44}；5s 不选服务端按 pass 结算。
+
+  /** 收到 responses：把 options 渲染成按钮，起 5s 本地倒计时。 */
+  function onResponses(msg) {
+    const seat = num(msg.seat, S.seat);
+    const options = Array.isArray(msg.options) ? msg.options : [];
+    if (!options.length) return;
+    if (seat !== S.seat) {
+      // 服务端只推给本人；防御：别把别人的窗口当成自己的
+      logEvent({ kind: 'responses', seat: seat, extra: '（他家的响应窗口，忽略）' });
+      return;
+    }
+    clearResponseWindow(true);
+    S.responses = { seq: num(msg.seq, S.lastEventSeq), seat: seat, options: options };
+    S.phase = 'await_response';
+    S.turn = seat;
+    S.pending = false;
+    if (S.pendingTimer) clearTimeout(S.pendingTimer);
+    S.responseDeadline = Date.now() + RESPONSE_TIMEOUT_MS;
+    S.responseLeft = Math.ceil(RESPONSE_TIMEOUT_MS / 1000);
+    S.responseTimer = setInterval(tickResponseTimer, 200);
+    logEvent({ kind: 'responses', seat: seat, payload: { options: options } });
+    setBanner(
+      '响应窗口：' +
+        options.map(responseOptionLabel).join(' / ') +
+        '（' +
+        Math.round(RESPONSE_TIMEOUT_MS / 1000) +
+        's 内不选按 pass 结算）',
+      'info'
+    );
+    render();
+  }
+
+  /** 本地倒计时（只重绘动作区，不动牌桌）。 */
+  function tickResponseTimer() {
+    if (!S.responses) {
+      stopResponseTimer();
+      return;
+    }
+    S.responseLeft = Math.max(0, Math.ceil((S.responseDeadline - Date.now()) / 1000));
+    if (S.responseLeft <= 0) {
+      stopResponseTimer();
+      logEvent({ kind: 'responses', seat: S.seat, extra: '本地倒计时归零，等待服务端按 pass 结算' });
+      scheduleSync(0); // 拉权威状态：窗口结算后 phase 会离开 await_response
+      setTimeout(recheckResponseWindowAfterTimeout, 1500);
+    }
+    renderActions();
+  }
+
+  /** 超时兜底：正常情况 response_window_end / 状态同步已经清掉窗口；否则本地收起，避免永久卡死。 */
+  function recheckResponseWindowAfterTimeout() {
+    if (!S.responses) return;
+    if (S.phase !== 'await_response') {
+      clearResponseWindow(false);
+      render();
+      return;
+    }
+    logEvent({
+      kind: 'responses',
+      seat: S.seat,
+      extra: '超时后仍未收到 response_window_end 且状态仍是 await_response，本地收起按钮',
+    });
+    clearResponseWindow(false);
+    scheduleSync(0);
+    render();
+  }
+
+  function stopResponseTimer() {
+    if (S.responseTimer) {
+      clearInterval(S.responseTimer);
+      S.responseTimer = null;
+    }
+  }
+
+  function clearResponseWindow(keepBanner) {
+    stopResponseTimer();
+    S.responses = null;
+    S.responseLeft = 0;
+    // 响应窗口的提示横幅要收掉；用文本前缀判断，避免 className 带多个类时漏清
+    if (!keepBanner && dom.banner.textContent && dom.banner.textContent.indexOf('响应窗口') === 0) {
+      setBanner('');
+    }
+  }
+
+  /** 收到 response_window_end：收起按钮，并同步一次权威状态（副露/和了/轮转都可能变了）。 */
+  function onResponseWindowEnd(msg) {
+    clearResponseWindow(false);
+    S.pending = false;
+    if (S.pendingTimer) clearTimeout(S.pendingTimer);
+    logEvent({ kind: 'response_window_end', seat: -1, payload: { seq: num(msg.seq, 0) } });
+    scheduleSync(120);
+    render();
+  }
+
+  /** 响应按钮文案；服务端 chi/pon/kan 的 action 不带 tile，用 consumed/最后一张牌河补。 */
+  function responseOptionLabel(option) {
+    if (!option) return '—';
+    const consumed = Array.isArray(option.consumed) ? option.consumed : [];
+    const lastDiscard = S.lastDiscard && S.lastDiscard.tile ? S.lastDiscard.tile : '';
+    const tile = option.tile || lastDiscard || consumed[0] || '';
+    switch (option.kind) {
+      case 'ron':
+        return '荣和 ' + tile;
+      case 'pon':
+        return '碰 ' + tile;
+      case 'chi': {
+        const pair = consumed.join('');
+        return '吃 ' + tile + (pair ? '（' + pair + '）' : '');
+      }
+      case 'kan_daiminkan':
+        return '大明杠 ' + tile;
+      case 'kan_shouminkan':
+        return '加杠 ' + tile;
+      case 'kan_ankan':
+        return '暗杠 ' + tile;
+      case 'pass':
+        return 'pass（跳过）';
+      default:
+        return actionLabel(option);
+    }
+  }
+
+  function responseOptionTitle(option) {
+    try {
+      return '提交 ' + JSON.stringify(option);
+    } catch (err) {
+      return '提交响应动作';
+    }
+  }
+
+  /** 提交响应动作：seq 必须回填 responses.seq（服务端用它校验动作是否过期）。 */
+  function submitResponse(option) {
+    if (!S.responses || S.pending) return;
+    if (Date.now() > S.responseDeadline) {
+      toast('响应已超时，服务端会按 pass 结算');
+      return;
+    }
+    const action = { kind: option.kind };
+    if (option.tile) action.tile = option.tile;
+    if (Array.isArray(option.consumed) && option.consumed.length) action.consumed = option.consumed;
+    const seq = S.responses.seq;
+    clearResponseWindow(false);
+    submitAction(action, { seq: seq, label: '响应：' + responseOptionLabel(option) });
+  }
+
+  /** AI 决策广播（顶层消息，不是 event）：渲染思考条 + 写日志。 */
+  function onAgentThought(msg) {
+    const payload = {
+      agent: msg.agent,
+      elapsed_ms: msg.elapsed_ms,
+      chosen: msg.chosen,
+      candidates: msg.candidates,
+    };
+    showThought(payload, num(msg.seat, -1));
+    appendLog({ kind: 'agent_thought', seat: num(msg.seat, -1), payload: payload }, false);
   }
 
   // ── 事件 → 状态 ─────────────────────────────────────────────
@@ -878,12 +1068,21 @@
         const meld = buildMeldFromEvent(msg);
         if (meld) {
           S.melds[msg.seat].push(meld);
-          if (Array.isArray(p.consumed)) {
-            p.consumed.forEach(function (tile) {
-              if (msg.seat === S.seat) removeOne(S.hand, tile);
+          // 我方副露：把消耗掉的手牌从手里扣掉
+          if (msg.seat === S.seat) {
+            const consumed = Array.isArray(p.consumed) ? p.consumed : [];
+            consumed.forEach(function (tile) {
+              removeOne(S.hand, tile);
             });
+            if (p.tile && meld.from !== S.seat) removeOne(S.hand, p.tile);
           }
-          if (msg.seat === S.seat && p.tile && meld.from !== S.seat) removeOne(S.hand, p.tile);
+          // 被鸣的那张牌会从放铳者牌河里拿走（权威状态由同步兜底）
+          if (Number.isFinite(p.from) && Array.isArray(S.discards[p.from]) && p.tile) {
+            const river = S.discards[p.from];
+            if (river.length && river[river.length - 1] === p.tile) river.pop();
+          }
+          S.turn = msg.seat;
+          S.phase = 'await_discard';
         } else {
           scheduleSync(120);
         }
@@ -943,18 +1142,20 @@
 
   function buildMeldFromEvent(msg) {
     const p = msg.payload || {};
-    const tiles = [];
-    if (p.tile) tiles.push(p.tile);
-    const consumed = Array.isArray(p.consumed) ? p.consumed : Array.isArray(p.tiles) ? p.tiles : [];
-    consumed.forEach(function (tile) {
-      tiles.push(tile);
-    });
+    // task-14 起服务端 payload 带 tiles（完整 3/4 张）、consumed、from、meld_kind
+    const tiles = Array.isArray(p.tiles) ? p.tiles.slice() : [];
+    if (!tiles.length) {
+      if (p.tile) tiles.push(p.tile);
+      const consumed = Array.isArray(p.consumed) ? p.consumed : [];
+      consumed.forEach(function (tile) {
+        tiles.push(tile);
+      });
+    }
     if (!tiles.length) return null;
-    const kinds = { chi: 'chi', pon: 'pon', kan_daiminkan: 'kan', kan_shouminkan: 'kan', kan_ankan: 'kan' };
     return {
-      kind: kinds[msg.kind] || msg.kind,
+      kind: p.meld_kind || p.kan_type || msg.kind,
       tiles: tiles,
-      from: msg.seat,
+      from: Number.isFinite(p.from) ? p.from : -1,
     };
   }
 
@@ -971,14 +1172,17 @@
     return true; // 事件流模式：由服务端做最终校验
   }
 
-  function submitAction(action) {
+  function submitAction(action, opts) {
+    const options = opts || {};
     if (S.pending) return;
     if (!S.wsReady) {
       toast('WebSocket 未连接');
       return;
     }
     const msg = { type: 'action', action_id: uuid(), action: action };
-    if (S.lastEventSeq > 0) msg.seq = S.lastEventSeq;
+    // 响应窗口要求回填 responses.seq（opts.seq）；普通动作回填最近事件 seq
+    const seq = options.seq !== undefined ? options.seq : S.lastEventSeq;
+    if (seq > 0) msg.seq = seq;
     S.pending = true;
     S.pendingTimer = setTimeout(function () {
       if (S.pending) {
@@ -988,7 +1192,12 @@
       }
     }, 4000);
     if (send(msg)) {
-      logEvent({ kind: 'action', seat: S.seat, payload: action }, false);
+      logEvent({
+        kind: 'action',
+        seat: S.seat,
+        payload: action,
+        extra: options.label || '提交 ' + JSON.stringify(action),
+      });
       renderActions();
     } else {
       S.pending = false;
@@ -1203,9 +1412,8 @@
     }
 
     const turnText = S.turn === S.seat ? '你' : seatShort(S.turn);
-    dom.center.appendChild(
-      el('div', 'center-turn', '行动：' + turnText + (S.phase === 'await_discard' ? '（打牌）' : '（摸牌）'))
-    );
+    const phaseHint = PHASE_HINT[S.phase] || '';
+    dom.center.appendChild(el('div', 'center-turn', '行动：' + turnText + phaseHint));
     dom.center.appendChild(el('div', 'center-phase', (S.phase || '—') + ' · ' + (PHASE_LABEL[S.phase] || '')));
   }
 
@@ -1264,6 +1472,25 @@
     dom.actions.replaceChildren();
     if (!S.gameId) {
       dom.actionHint.textContent = '填入对局与令牌后点「连接」';
+      return;
+    }
+    // 响应窗口优先：只显示 responses 里的选项（吃/碰/杠/荣和/pass）
+    if (S.responses) {
+      const expired = Date.now() > S.responseDeadline;
+      S.responses.options.forEach(function (option) {
+        const primary = option.kind === 'ron' || option.kind === 'tsumo';
+        const btn = el('button', 'btn' + (primary ? ' primary' : ''), responseOptionLabel(option));
+        btn.type = 'button';
+        btn.title = responseOptionTitle(option);
+        btn.disabled = S.pending || expired;
+        btn.addEventListener('click', function () {
+          submitResponse(option);
+        });
+        dom.actions.appendChild(btn);
+      });
+      dom.actionHint.textContent = expired
+        ? '响应超时，等待服务端按 pass 结算…'
+        : '响应窗口：' + S.responseLeft + 's 内选一个（不选按 pass）';
       return;
     }
     const legal = Array.isArray(S.legal) ? S.legal : [];
@@ -1330,15 +1557,15 @@
     }
   }
 
-  function showThought(payload, seat, demo) {
+  /** 渲染 AI 思考条（真实事件 agent_thought：seat/agent/elapsed_ms/chosen/candidates）。 */
+  function showThought(payload, seat) {
     const agent = payload.agent || payload.name || 'agent';
     const elapsed = payload.elapsed_ms !== undefined ? payload.elapsed_ms : payload.elapsedMs;
-    const chosen = payload.chosen || payload.action;
+    const chosen = payload.chosen !== undefined ? payload.chosen : payload.action;
     const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-    dom.thoughtAgent.textContent =
-      (demo ? '[本地演示] ' : '') + agent + ' · ' + seatShort(seat === undefined ? -1 : seat);
+    dom.thoughtAgent.textContent = agent + ' · ' + seatShort(seat === undefined ? -1 : seat);
     let text = '思考 ' + (elapsed === undefined ? '?' : elapsed + 'ms');
-    text += ' → ' + fmtAction(chosen);
+    text += ' → ' + fmtChosen(chosen);
     if (candidates.length) {
       text +=
         ' · 候选 ' +
@@ -1346,16 +1573,50 @@
         '：' +
         candidates
           .slice(0, 5)
-          .map(fmtAction)
+          .map(fmtCandidate)
           .join(' / ');
     }
     dom.thoughtText.textContent = text;
     dom.thoughtBar.classList.remove('hidden');
-    dom.thoughtBar.classList.toggle('demo', !!demo);
+    dom.thoughtBar.classList.remove('demo');
     if (S.thoughtTimer) clearTimeout(S.thoughtTimer);
     S.thoughtTimer = setTimeout(function () {
       dom.thoughtBar.classList.add('hidden');
     }, 12000);
+  }
+
+  /** 思考条里的「选择」展示：字符串牌面 → 「打 9s」；对象 → 动作名。 */
+  function fmtChosen(chosen) {
+    if (chosen === undefined || chosen === null || chosen === '') return '—';
+    if (typeof chosen === 'string') {
+      if (/^r?[1-9][mps]$/i.test(chosen) || /^[ESWNPFC]$/.test(chosen)) return '打 ' + chosen;
+      return fmtCandidate(chosen);
+    }
+    return fmtAction(chosen);
+  }
+
+  /** 服务端的 candidate 是 "discard 9s" 这类「动作名 + 牌」字符串，翻成人话。 */
+  function fmtCandidate(text) {
+    if (typeof text !== 'string') return fmtAction(text);
+    const matched = /^([a-z_]+)\s*(.*)$/.exec(text);
+    if (!matched) return text;
+    const map = {
+      discard: '打',
+      draw: '摸',
+      pass: 'pass',
+      riichi: '立直',
+      tsumo: '自摸',
+      ron: '荣和',
+      pon: '碰',
+      chi: '吃',
+      kan_daiminkan: '大明杠',
+      kan_shouminkan: '加杠',
+      kan_ankan: '暗杠',
+      kyuushu: '九种九牌',
+    };
+    const label = map[matched[1]];
+    if (!label) return text;
+    return label + (matched[2] ? ' ' + matched[2] : '');
   }
 
   // ── 事件日志 ─────────────────────────────────────────────────
@@ -1374,7 +1635,25 @@
       case 'error':
         return (p.code || '') + ' ' + (p.message || '');
       case 'agent_thought':
-        return (p.agent || '') + ' ' + (p.elapsed_ms === undefined ? '' : p.elapsed_ms + 'ms') + ' → ' + fmtAction(p.chosen);
+        return (
+          (p.agent || '') +
+          ' ' +
+          (p.elapsed_ms === undefined ? '' : p.elapsed_ms + 'ms') +
+          ' → ' +
+          fmtChosen(p.chosen)
+        );
+      case 'responses': {
+        const options = Array.isArray(p.options) ? p.options : [];
+        return options.length ? options.map(responseOptionLabel).join(' / ') : '（已忽略）';
+      }
+      case 'response_window_end':
+        return 'seq ' + num(p.seq, 0);
+      case 'chi':
+      case 'pon':
+      case 'kan': {
+        const tiles = Array.isArray(p.tiles) ? p.tiles : [];
+        return (p.meld_kind || p.kan_type || kind) + ' ' + tiles.join('') + (p.from === undefined ? '' : ' ← s' + p.from);
+      }
       case 'tsumo':
       case 'ron':
         return (p.winning_tile || '') + ' ' + (p.han === undefined ? '' : p.han + ' 翻 ' + (p.fu || '') + ' 符');
@@ -1390,7 +1669,8 @@
     }
   }
 
-  function appendLog(entry, historical) {    const kind = entry.kind || 'event';
+  function appendLog(entry, historical) {
+    const kind = entry.kind || 'event';
     const seq = num(entry.seq, 0);
     if (seq > 0 && seq <= S.logMaxSeq && !historical) return; // 重放去重
     if (seq > 0) S.logMaxSeq = Math.max(S.logMaxSeq, seq);
@@ -1524,27 +1804,6 @@
         setBanner('重新同步失败：' + (err && err.message ? err.message : err), 'err');
       }
     });
-    dom.btnDemoThought.addEventListener('click', function () {
-      const agents = ['shanten', 'defense', 'random', 'search'];
-      const tiles = ['1m', '5p', '9s', 'E', 'C', 'r5m'];
-      showThought(
-        {
-          agent: agents[Math.floor(Math.random() * agents.length)],
-          elapsed_ms: 3 + Math.floor(Math.random() * 40),
-          chosen: { kind: 'discard', tile: tiles[Math.floor(Math.random() * tiles.length)] },
-          candidates: tiles.slice(0, 5).map(function (tile) {
-            return { kind: 'discard', tile: tile };
-          }),
-        },
-        (S.seat + 1) % 4,
-        true
-      );
-      logEvent({
-        kind: 'agent_thought',
-        seat: (S.seat + 1) % 4,
-        extra: '本地注入（S6 暂未发送 agent_thought）',
-      });
-    });
     dom.btnDrop.addEventListener('click', simulateDrop);
     window.addEventListener('beforeunload', function () {
       S.userClosed = true;
@@ -1564,6 +1823,16 @@
       },
       resumeFrom: function (seq) {
         send({ type: 'resume', last_seq: seq });
+      },
+      /** 响应窗口调试：返回当前 options / 按索引提交（README 验收用） */
+      responseOptions: function () {
+        return S.responses ? S.responses.options : [];
+      },
+      respond: function (index) {
+        if (!S.responses) return null;
+        const option = S.responses.options[index || 0];
+        if (option) submitResponse(option);
+        return option || null;
       },
       disconnect: disconnect,
     };

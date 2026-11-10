@@ -83,8 +83,6 @@
           <div class="demo-actions">
             <button type="button" class="btn tiny ghost" id="btn-drop"
                     title="模拟网络中断：只关闭 WebSocket，随后走自动重连 + resume 补齐（不刷新页面）">模拟断线（自动重连）</button>
-            <button type="button" class="btn tiny ghost" id="btn-demo-thought"
-                    title="S6 目前不产生 agent_thought 事件；此按钮在本地注入一条，仅用于验收思考条 UI">演示思考条（本地注入）</button>
             <button type="button" class="btn tiny ghost" id="btn-resync" title="重新拉取 GET /api/v1/games/{id} 并 resume">重新同步</button>
           </div>
         </div>
@@ -103,9 +101,9 @@
           <div class="hint-title">提示</div>
           <ul class="hints">
             <li>点击自己的手牌 = 打牌（<code>discard</code>）。</li>
-            <li>断线后自动重连，并按 <code>resume(last_seq)</code> 补齐事件。</li>
-            <li>刷新页面会用 localStorage 里的对局/令牌自动重连。</li>
-            <li>副露 / 立直 / 和了 / pass 按钮来自 <code>legal_actions</code>，服务端 M2 尚未接完时点它会收到 <code>ILLEGAL_ACTION</code>，属预期。</li>
+            <li>别人打出的牌你能吃/碰/杠/荣和时，会出现 <b>响应窗口</b>按钮；<b>5 秒</b>内不选按 <code>pass</code> 结算。</li>
+            <li>AI 每次决策会广播 <code>agent_thought</code>，下方思考条实时显示（agent / 耗时 / 选择 / 候选）。</li>
+            <li>断线后自动重连，并按 <code>resume(last_seq)</code> 补齐事件；刷新页面会自动续上。</li>
           </ul>
         </div>
       </aside>
