@@ -106,3 +106,51 @@ jobs:
       - name: 单元测试（含与 Python 生成 fixture 的对拍）
         working-directory: go-engine
         run: go test ./... -count=1
+
+  # 4) Go：日麻 v2（riichi）—— 规则/对局/服务全量测试 + 真实 MySQL 存储契约 + -race
+  #    背景：原 CI 的 Go job 只覆盖 go-engine（v1 对齐），riichi 一直靠本地门禁；
+  #    本机 Windows 缺 64-bit gcc 跑不了 -race，所以在 CI（Linux）补上。
+  riichi-test:
+    name: riichi（Go 1.25 + -race）+ MySQL 5.7 存储契约
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: riichi_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: riichi/go.sum
+
+      - name: 格式检查（gofmt）
+        working-directory: riichi
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化：$unformatted"
+            exit 1
+          fi
+
+      - name: 静态检查（go vet）
+        working-directory: riichi
+        run: go vet ./...
+
+      - name: 单元/集成测试（-race；MySQL 存储契约真跑）
+        working-directory: riichi
+        env:
+          MYSQL_TEST_URL: "root@tcp(127.0.0.1:3306)/riichi_test?parseTime=true&loc=UTC&charset=utf8mb4"
+        run: go test ./... -count=1 -race
