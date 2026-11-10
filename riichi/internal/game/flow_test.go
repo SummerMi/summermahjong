@@ -219,8 +219,9 @@ func TestResponseRonBeatsPon(t *testing.T) {
 		t.Fatal("荣和优先时碰不应成立")
 	}
 	// 庄家（seat0）放铳给闲家（seat1）：闲家荣和 1000 点
-	if s.Scores[1] != 26000 || s.Scores[0] != 24000 {
-		t.Fatalf("scores=%v，期望 seat1=26000 seat0=24000", s.Scores)
+	// 123m456m789m 是一气通贯（2 翻）+ 平和（1 翻），荣和 3900
+	if s.Scores[1] != 28900 || s.Scores[0] != 21100 {
+		t.Fatalf("scores=%v，期望 seat1=28900 seat0=21100", s.Scores)
 	}
 }
 
@@ -240,8 +241,8 @@ func TestResponseDoubleRon(t *testing.T) {
 	if countEvents(s, EventRon) != 2 {
 		t.Fatalf("双响应产生 2 条 ron 事件，实际 %d", countEvents(s, EventRon))
 	}
-	if s.Scores[1] != 26000 || s.Scores[2] != 26000 || s.Scores[0] != 23000 {
-		t.Fatalf("双响点数=%v，期望 seat0=23000 seat1=26000 seat2=26000", s.Scores)
+	if s.Scores[1] != 28900 || s.Scores[2] != 28900 || s.Scores[0] != 17200 {
+		t.Fatalf("双响点数=%v，期望 seat0=17200 seat1=28900 seat2=28900", s.Scores)
 	}
 }
 
@@ -261,8 +262,8 @@ func TestResponseDoubleRonDisabled(t *testing.T) {
 	if countEvents(s, EventRon) != 1 {
 		t.Fatalf("头跳应只有 1 条 ron 事件，实际 %d", countEvents(s, EventRon))
 	}
-	if s.Scores[1] != 26000 || s.Scores[2] != 25000 {
-		t.Fatalf("头跳点数=%v，期望 seat1=26000 seat2=25000", s.Scores)
+	if s.Scores[1] != 28900 || s.Scores[2] != 25000 {
+		t.Fatalf("头跳点数=%v，期望 seat1=28900 seat2=25000", s.Scores)
 	}
 }
 
@@ -350,6 +351,21 @@ func TestResponseChiSucceeds(t *testing.T) {
 	if len(s.Discards[0]) != 0 {
 		t.Fatalf("牌河=%v，被吃的牌应移除", s.Discards[0])
 	}
+	// 回归：吃/碰后没有「摸到的牌」，但仍必须能正常打牌（S5 曾因 Drawn==nil 卡死）
+	legal := s.Legal()
+	if len(legal) == 0 {
+		t.Fatal("吃后 Legal 不应为空")
+	}
+	discard := legal[0]
+	if discard.Kind != ActDiscard {
+		t.Fatalf("吃后首个合法动作=%v want discard", discard.Kind)
+	}
+	if err := s.Apply(discard); err != nil {
+		t.Fatalf("吃后打牌失败: %v", err)
+	}
+	if s.Phase != PhaseAwaitDraw && s.Phase != PhaseAwaitResponse {
+		t.Fatalf("吃后打牌 phase=%v", s.Phase)
+	}
 }
 
 // TestResponseTimeoutAllPass 响应超时：全部视为 pass，轮到下家摸牌。
@@ -409,7 +425,7 @@ func TestResponsePassThenRonByOther(t *testing.T) {
 	applyDiscard(t, s, 0, "5p")
 	// seat1 无选项自动 pass；seat2 荣和
 	applyRon(t, s, 2, "5p")
-	if countEvents(s, EventRon) != 1 || s.Scores[2] != 26000 {
+	if countEvents(s, EventRon) != 1 || s.Scores[2] != 28900 {
 		t.Fatalf("scores=%v events=%v", s.Scores, eventKinds(s))
 	}
 }

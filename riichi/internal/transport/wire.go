@@ -36,6 +36,36 @@ type resumedMessage struct {
 	ToSeq   uint64 `json:"to_seq"`
 }
 
+// responsesMessage 是响应窗口推送给人类座位的消息（task-14 新增，契约 §6.2 扩展）。
+//
+// 客户端收到后应在 options 里选一个，用 {"type":"action", "seq":N, "action":{...}}
+// 回传（与普通动作消息同格式）；超时未回则服务端按 pass 结算。
+type responsesMessage struct {
+	Type    string       `json:"type"` // "responses"
+	Seq     uint64       `json:"seq"`  // 当前对局 seq（动作消息的 seq 回填这个值）
+	Seat    int          `json:"seat"`
+	Options []actionWire `json:"options"` // ron/pon/chi/kan/pass 候选项
+}
+
+// responseWindowEndMessage 表示响应窗口结束（pass/超时/结算都发一条），
+// 前端可据此收起「等待响应」提示（task-14 新增）。
+type responseWindowEndMessage struct {
+	Type string `json:"type"` // "response_window_end"
+	Seq  uint64 `json:"seq"`
+}
+
+// agentThoughtMessage 是 AI 决策的可观测信息（前端渲染用，task-14 新增）。
+//
+// 字段与前端约定一致：seat/agent/elapsed_ms/chosen/candidates。
+type agentThoughtMessage struct {
+	Type       string   `json:"type"` // "agent_thought"
+	Seat       int      `json:"seat"`
+	Agent      string   `json:"agent"`
+	ElapsedMS  int64    `json:"elapsed_ms"`
+	Chosen     string   `json:"chosen"`
+	Candidates []string `json:"candidates"`
+}
+
 // pongMessage 是心跳响应，Ts 原样回显（用 RawMessage 保留客户端原始值）。
 type pongMessage struct {
 	Type string          `json:"type"` // "pong"
@@ -279,6 +309,8 @@ func phaseName(p game.Phase) string {
 		return "await_draw"
 	case game.PhaseAwaitDiscard:
 		return "await_discard"
+	case game.PhaseAwaitResponse:
+		return "await_response"
 	case game.PhaseRoundEnd:
 		return "round_end"
 	case game.PhaseGameEnd:

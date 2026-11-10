@@ -294,10 +294,11 @@ type Options struct {
 	ScoreProvider ScoreProvider
 }
 
-// withDefaults 补齐零值选项。
+// withDefaults 补齐零值选项：默认使用真实算点（rules.Evaluate/Score），
+// 需要固定 1 翻 30 符的旧行为时显式注入 placeholderScorer（测试用）。
 func (o Options) withDefaults() Options {
 	if o.ScoreProvider == nil {
-		o.ScoreProvider = placeholderScorer{}
+		o.ScoreProvider = RulesScorer{}
 	}
 	return o
 }

@@ -33,6 +33,11 @@ type Config struct {
 	JWTSecret []byte
 	// AgentTimeout 是 AI 单次决策上限，0 表示默认 500ms。
 	AgentTimeout time.Duration
+	// AutoPassResponses=true 时响应窗口全部自动 pass（S6 兼容模式）；
+	// 默认 false = 真打模式：打牌/加杠后把响应选项推给人类座位。
+	AutoPassResponses bool
+	// ResponseTimeout 是人类响应窗口超时，0 表示默认 5s（超时按 pass 结算）。
+	ResponseTimeout time.Duration
 	// Store 是事件存储，nil 表示使用内存实现（测试 / 单机 demo）。
 	Store store.Store
 	// Logger 是结构化日志，nil 表示 slog.Default()。
@@ -65,10 +70,12 @@ func New(cfg Config) (*Server, error) {
 	}
 	m := newMetrics()
 	manager := NewManager(ManagerConfig{
-		Store:        cfg.Store,
-		AgentTimeout: cfg.AgentTimeout,
-		Logger:       cfg.Logger,
-		Metrics:      m,
+		Store:             cfg.Store,
+		AgentTimeout:      cfg.AgentTimeout,
+		AutoPassResponses: cfg.AutoPassResponses,
+		ResponseTimeout:   cfg.ResponseTimeout,
+		Logger:            cfg.Logger,
+		Metrics:           m,
 	})
 	return &Server{
 		cfg:     cfg,

@@ -12,6 +12,7 @@ import (
 	"summermahjong/riichi/internal/agent"
 	"summermahjong/riichi/internal/game"
 	"summermahjong/riichi/internal/store"
+	"summermahjong/riichi/internal/tile"
 )
 
 const (
@@ -22,6 +23,8 @@ const (
 	actionIDCacheLimit = 4096
 	// defaultAgentTimeout 是 Agent 决策超时兜底（契约 §4：默认 500ms）。
 	defaultAgentTimeout = 500 * time.Millisecond
+	// defaultResponseTimeout 是人类响应窗口默认超时（超时按 pass 处理）。
+	defaultResponseTimeout = 5 * time.Second
 )
 
 // roomSnapshot 是不可变的对局快照，供 HTTP 查询无锁读取。
@@ -115,11 +118,15 @@ type resumeRequest struct {
 }
 
 // aiResult 是 AI 决策 goroutine 回传的结果。
+//
+// response=true 表示这是响应窗口里的决策（ron/pon/chi/kan/pass），
+// false 表示自回合的打牌/立直/杠/自摸决策。
 type aiResult struct {
 	seat     game.Seat
 	action   game.Action
 	elapsed  time.Duration
 	fallback bool
+	response bool
 }
 
 // roomConfig 是房间的静态配置。
@@ -128,8 +135,13 @@ type roomConfig struct {
 	agents       [seatCount]agent.Agent // nil 表示人类座位（等 WS 动作）
 	agentNames   [seatCount]string
 	agentTimeout time.Duration
-	logger       *slog.Logger
-	metrics      *metrics // 可为 nil（单测直接建房间时）
+	// manualResponses=true 时对局使用显式响应窗口（game.Options.ManualResponses）：
+	// 打牌/加杠后推 responses 给人类座位、AI 自动决策；false 表示兼容模式（全部自动 pass）。
+	manualResponses bool
+	// responseTimeout 是人类响应窗口超时（超时按 pass 结算）。
+	responseTimeout time.Duration
+	logger          *slog.Logger
+	metrics         *metrics // 可为 nil（单测直接建房间时）
 }
 
 // Room 是一局对局的 actor：单 goroutine 串行执行「Apply → 落库 → 广播 → AI 驱动」。
@@ -165,6 +177,13 @@ type Room struct {
 	lastSavedSeq       uint64
 	processedActionIDs map[string]struct{}
 	actionIDOrder      []string
+
+	// 响应窗口状态（actor 专用）
+	responseActive bool            // 当前窗口是否已调度（推送/AI/定时器）
+	responseAI     [seatCount]bool // 已启动响应决策的 AI 座位（防止重复启动）
+	responseTimer  *time.Timer     // 当前窗口的超时定时器
+	responseGen    int             // 窗口代次：旧定时器回传时用于丢弃过期超时
+	timeoutCh      chan int        // 超时信号（携带窗口代次）
 }
 
 // newRoom 构造房间（纯内存初始化，不启动 goroutine、不落库）。
@@ -177,6 +196,9 @@ func newRoom(id string, st *game.State, meta store.GameMeta, cfg roomConfig) *Ro
 	if cfg.agentTimeout <= 0 {
 		cfg.agentTimeout = defaultAgentTimeout
 	}
+	if cfg.responseTimeout <= 0 {
+		cfg.responseTimeout = defaultResponseTimeout
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Room{
 		id:                 id,
@@ -186,7 +208,8 @@ func newRoom(id string, st *game.State, meta store.GameMeta, cfg roomConfig) *Ro
 		actionCh:           make(chan *actionRequest, 16),
 		attachCh:           make(chan *attachRequest, 16),
 		resumeCh:           make(chan *resumeRequest, 16),
-		aiCh:               make(chan aiResult, 1),
+		aiCh:               make(chan aiResult, 4),
+		timeoutCh:          make(chan int, 4),
 		quit:               make(chan struct{}),
 		ctx:                ctx,
 		cancel:             cancel,
@@ -244,6 +267,9 @@ func (r *Room) Close() {
 	r.closeOnce.Do(func() {
 		r.cancel()
 		close(r.quit)
+		if r.responseTimer != nil {
+			r.responseTimer.Stop()
+		}
 		r.subsMu.Lock()
 		for c := range r.subs {
 			c.close()
@@ -267,13 +293,15 @@ func (r *Room) run() {
 			r.handleResume(req)
 		case res := <-r.aiCh:
 			r.handleAI(res)
+		case gen := <-r.timeoutCh:
+			r.handleResponseTimeout(gen)
 		}
 	}
 }
 
-// drive 推进「无需人工决策」的状态：自动摸牌、驱动 AI 打牌。
+// drive 推进「无需人工决策」的状态：自动摸牌、驱动 AI 打牌、调度响应窗口。
 //
-// 人类座位进入 AwaitDiscard 后返回，等待 WS action 消息。
+// 人类座位进入 AwaitDiscard / 待响应时返回，等待 WS action 消息或超时。
 func (r *Room) drive() {
 	for {
 		switch r.st.Phase {
@@ -294,6 +322,10 @@ func (r *Room) drive() {
 			}
 			r.aiBusy = true
 			r.launchAI(seat)
+			return
+		case game.PhaseAwaitResponse:
+			// 响应窗口：把选项推给人类座位 / 启动 AI 决策 / 启动超时定时器，然后等消息
+			r.startResponseWindow()
 			return
 		default:
 			return
@@ -326,8 +358,12 @@ func (r *Room) launchAI(seat game.Seat) {
 	}()
 }
 
-// handleAI 处理 AI 决策结果：再次校验合法性后 Apply，然后继续驱动。
+// handleAI 处理 AI 决策结果：响应窗口决策交给 handleAIResponse，自回合决策走原逻辑。
 func (r *Room) handleAI(res aiResult) {
+	if res.response {
+		r.handleAIResponse(res)
+		return
+	}
 	r.aiBusy = false
 	if r.st.Phase != game.PhaseAwaitDiscard || r.st.Turn != res.seat {
 		return // 结果已过期（对局已推进），丢弃
@@ -348,8 +384,188 @@ func (r *Room) handleAI(res aiResult) {
 			_ = r.applyAction(legal[0])
 		}
 	}
+	r.publishAgentThought(res.seat, action, res.elapsed, obs)
 	r.recordDecision(res)
 	r.drive()
+}
+
+// ── 响应窗口（task-14）────────────────────────────────────────────
+
+// startResponseWindow 调度一次响应窗口：
+//   - AI 座位：启动独立决策 goroutine（obs.LegalActions 已是该座位的响应选项）；
+//   - 人类座位：把 {"type":"responses",...} 推给其所有已 resume 的连接；
+//   - 同时启动一个窗口级超时定时器，超时后所有未响应座位按 pass 结算。
+//
+// 幂等：drive() 会被多次调用，用 responseActive 保证同一个窗口只调度一次。
+func (r *Room) startResponseWindow() {
+	if r.st.Phase != game.PhaseAwaitResponse || r.st.Pending == nil {
+		return
+	}
+	if r.responseActive {
+		return
+	}
+	r.responseActive = true
+	r.responseGen++
+	gen := r.responseGen
+	r.responseTimer = time.AfterFunc(r.cfg.responseTimeout, func() {
+		select {
+		case r.timeoutCh <- gen:
+		case <-r.quit:
+		}
+	})
+
+	for seat := game.Seat(0); seat < seatCount; seat++ {
+		if r.st.Pending.Decided[seat] {
+			continue
+		}
+		if r.cfg.agents[seat] != nil {
+			if r.responseAI[seat] {
+				continue
+			}
+			r.responseAI[seat] = true
+			r.launchResponseAI(seat)
+			continue
+		}
+		r.pushResponses(seat)
+	}
+}
+
+// pushResponses 把一个座位的响应选项推给该座位的所有已同步连接。
+func (r *Room) pushResponses(seat game.Seat) {
+	options := r.st.Responses(seat)
+	if len(options) == 0 {
+		return
+	}
+	wire := make([]actionWire, 0, len(options))
+	for _, action := range options {
+		wire = append(wire, encodeAction(action))
+	}
+	data, err := json.Marshal(responsesMessage{
+		Type:    "responses",
+		Seq:     r.st.Seq,
+		Seat:    int(seat),
+		Options: wire,
+	})
+	if err != nil {
+		r.cfg.logger.Warn("responses 消息序列化失败", "game_id", r.id, "seat", seat, "err", err)
+		return
+	}
+	r.subsMu.Lock()
+	targets := make([]*client, 0, len(r.subs))
+	for c := range r.subs {
+		if c.seat == seat && c.synced {
+			targets = append(targets, c)
+		}
+	}
+	r.subsMu.Unlock()
+	for _, c := range targets {
+		if !c.trySend(data) {
+			r.cfg.logger.Warn("响应推送时发送缓冲已满，摘除连接", "game_id", r.id, "seat", c.seat)
+			r.dropClient(c)
+		}
+	}
+}
+
+// launchResponseAI 在独立 goroutine 里跑 Agent 的响应决策，带超时；非法/失败回退 pass。
+func (r *Room) launchResponseAI(seat game.Seat) {
+	obs := r.st.Observe(seat)
+	ag := r.cfg.agents[seat]
+	go func() {
+		started := time.Now()
+		ctx, cancel := context.WithTimeout(r.ctx, r.cfg.agentTimeout)
+		defer cancel()
+
+		action, err := ag.Decide(ctx, obs)
+		elapsed := time.Since(started)
+		fallback := err != nil || ctx.Err() != nil || !isResponseAction(obs, action)
+		if fallback {
+			action = game.Action{Kind: game.ActPass, Seat: seat}
+		}
+		select {
+		case r.aiCh <- aiResult{seat: seat, action: action, elapsed: elapsed, fallback: fallback, response: true}:
+		case <-r.quit:
+		}
+	}()
+}
+
+// handleAIResponse 应用一个 AI 响应决策（会再次校验，过期结果直接丢弃）。
+func (r *Room) handleAIResponse(res aiResult) {
+	r.responseAI[res.seat] = false
+	if r.st.Phase != game.PhaseAwaitResponse || r.st.Pending == nil || r.st.Pending.Decided[res.seat] {
+		return // 窗口已推进/该座位已响应 → 过期结果
+	}
+	action := res.action
+	action.Seat = res.seat
+	obs := r.st.Observe(res.seat)
+	if res.fallback || !isResponseAction(obs, action) {
+		action = game.Action{Kind: game.ActPass, Seat: res.seat}
+		res.fallback = true
+	}
+	if err := r.applyAction(action); err != nil {
+		r.cfg.logger.Warn("AI 响应执行失败，回退 pass",
+			"game_id", r.id, "seat", res.seat, "err", err)
+		if passErr := r.applyAction(game.Action{Kind: game.ActPass, Seat: res.seat}); passErr != nil {
+			return
+		}
+	}
+	r.publishAgentThought(res.seat, action, res.elapsed, obs)
+	r.recordDecision(res)
+	r.drive()
+}
+
+// handleResponseTimeout 处理窗口超时：所有未响应座位按 pass 结算。
+func (r *Room) handleResponseTimeout(gen int) {
+	if gen != r.responseGen {
+		return // 过期定时器（窗口已结束/换新）
+	}
+	if r.st.Phase != game.PhaseAwaitResponse || r.st.Pending == nil {
+		return
+	}
+	r.responseActive = false
+	seqBefore := r.st.Seq
+	if err := r.st.ResolveTimeout(); err != nil {
+		r.cfg.logger.Warn("响应超时结算失败", "game_id", r.id, "err", err)
+		return
+	}
+	r.afterApply(seqBefore, false)
+	r.drive()
+}
+
+// isResponseAction 校验 action 是否是该座位当前响应窗口的合法选项（chi 还需比对消耗牌）。
+func isResponseAction(obs game.Observation, action game.Action) bool {
+	for _, legal := range obs.LegalActions {
+		if legal.Kind != action.Kind {
+			continue
+		}
+		if legal.Kind == game.ActChi && !sameConsumedKinds(legal.Consumed, action.Consumed) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// sameConsumedKinds 比较两组牌是否包含相同的牌种与张数（吃的 Consumed 校验）。
+func sameConsumedKinds(a, b []tile.Tile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[tile.Kind]int, len(a))
+	for _, t := range a {
+		counts[t.Kind]++
+	}
+	for _, t := range b {
+		counts[t.Kind]--
+		if counts[t.Kind] < 0 {
+			return false
+		}
+	}
+	for _, n := range counts {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // recordDecision 统计一次 AI 决策（耗时 + 超时回退次数）。
@@ -378,19 +594,105 @@ func (r *Room) applyAction(action game.Action) error {
 	if err := r.st.Apply(action); err != nil {
 		return err
 	}
+	r.afterApply(seqBefore, tsumogiri)
+	return nil
+}
+
+// afterApply 是 Apply 之后的统一收尾：富化新增事件 → 落库 → 广播 → 快照 → 指标，
+// 并在离开响应窗口时清理窗口调度状态（停定时器、失效旧代次、清 AI 占位）。
+//
+// 抽出来是因为「超时 ResolveTimeout」不经过 Apply 但仍会产生事件，需要走同一套收尾。
+func (r *Room) afterApply(seqBefore uint64, tsumogiri bool) {
 	// 事件已按序追加；len(Events) 与 Seq 同步增长，故 Events[seqBefore:] 即新增事件
 	newEvents := r.st.Events[seqBefore:]
 	for i := range newEvents {
 		enrichEvent(r.st, &newEvents[i], tsumogiri)
 	}
 	r.persist(newEvents)
-	r.publish(newEvents)
+	// 先刷新快照再广播：收到事件的客户端立刻 GET 状态时能看到同一 seq，避免竞态
 	r.refreshSnapshot()
+	r.publish(newEvents)
 	r.metrics.actionsApplied.Add(1)
 	if r.cfg.metrics != nil {
 		r.cfg.metrics.actionsApplied.Add(1)
 	}
-	return nil
+
+	if r.st.Phase != game.PhaseAwaitResponse {
+		hadWindow := r.responseActive
+		r.responseActive = false
+		if r.responseTimer != nil {
+			r.responseTimer.Stop()
+			r.responseTimer = nil
+		}
+		r.responseGen++ // 让已触发的旧超时信号失效
+		for seat := 0; seat < seatCount; seat++ {
+			r.responseAI[seat] = false
+		}
+		if hadWindow {
+			// 窗口结束通知（pass/超时/结算都会走到这里），前端据此收起「等待响应」
+			r.publishJSON(responseWindowEndMessage{Type: "response_window_end", Seq: r.st.Seq})
+		}
+	}
+}
+
+// publishJSON 把一条非事件消息广播给所有已 resume 的连接（慢连接摘除）。
+func (r *Room) publishJSON(msg any) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	r.subsMu.Lock()
+	targets := make([]*client, 0, len(r.subs))
+	for c := range r.subs {
+		if c.synced {
+			targets = append(targets, c)
+		}
+	}
+	r.subsMu.Unlock()
+	for _, c := range targets {
+		if !c.trySend(data) {
+			r.dropClient(c)
+		}
+	}
+}
+
+// publishAgentThought 广播一条 AI 决策信息（agent_thought）。
+func (r *Room) publishAgentThought(seat game.Seat, action game.Action, elapsed time.Duration, obs game.Observation) {
+	agentName := r.cfg.agentNames[seat]
+	if agentName == "" {
+		agentName = "ai"
+	}
+	chosen := action.Kind.String()
+	if action.Kind == game.ActDiscard || action.Kind == game.ActRiichi ||
+		action.Kind == game.ActTsumo || action.Kind == game.ActRon {
+		if text := action.Tile.String(); text != "" && text != "?" {
+			chosen = text
+		}
+	}
+	candidates := make([]string, 0, len(obs.LegalActions))
+	for i, legal := range obs.LegalActions {
+		if i >= 24 {
+			break
+		}
+		candidates = append(candidates, encodeAction(legal).Kind+" "+
+			tileText(legal.Tile))
+	}
+	r.publishJSON(agentThoughtMessage{
+		Type:       "agent_thought",
+		Seat:       int(seat),
+		Agent:      agentName,
+		ElapsedMS:  elapsed.Milliseconds(),
+		Chosen:     chosen,
+		Candidates: candidates,
+	})
+}
+
+// tileText 返回动作牌的文本（没有牌时为空串）。
+func tileText(t tile.Tile) string {
+	if t.String() == "?" {
+		return ""
+	}
+	return t.String()
 }
 
 // persist 把新事件写入 store；失败只记日志，不阻塞对局（内存模式不会失败）。
@@ -577,7 +879,31 @@ func (r *Room) handleResume(req *resumeRequest) {
 		r.cfg.metrics.wsResumes.Add(1)
 	}
 	req.client.sendMessage(resumedMessage{Type: "resumed", FromSeq: from, ToSeq: current})
+
+	// 断线重连时如果正处在响应窗口且该座位还没响应，补推一次 responses，
+	// 否则玩家会一直等到超时。
+	if r.st.Phase == game.PhaseAwaitResponse && r.st.Pending != nil && !r.st.Pending.Decided[req.client.seat] {
+		r.pushResponsesTo(req.client)
+	}
 	req.reply <- nil
+}
+
+// pushResponsesTo 把某座位的响应选项推给单条连接（resume 补推用）。
+func (r *Room) pushResponsesTo(c *client) {
+	options := r.st.Responses(c.seat)
+	if len(options) == 0 {
+		return
+	}
+	wire := make([]actionWire, 0, len(options))
+	for _, action := range options {
+		wire = append(wire, encodeAction(action))
+	}
+	c.sendMessage(responsesMessage{
+		Type:    "responses",
+		Seq:     r.st.Seq,
+		Seat:    int(c.seat),
+		Options: wire,
+	})
 }
 
 // SubmitAction 提交一个客户端动作（人类座位）。
@@ -621,6 +947,17 @@ func (r *Room) handleAction(req *actionRequest) {
 	// 动作的座位以「连接身份」为准，不信任消息体里的座位字段（防越权）
 	action := req.action
 	action.Seat = req.seat
+
+	// 响应窗口：只接受该窗口内该座位的响应动作（ron/pon/chi/kan/pass），
+	// 合法性由 game.Apply 统一校验（含 ron 的振听、吃的 consumed 组合等）。
+	if r.st.Phase == game.PhaseAwaitResponse {
+		if r.st.Pending == nil || r.st.Pending.Decided[req.seat] {
+			req.reply <- fmt.Errorf("%w: seat %d 当前不在待响应集合（可能已响应或窗口已结束）",
+				game.ErrIllegalAction, req.seat)
+			return
+		}
+	}
+
 	if err := r.applyAction(action); err != nil {
 		req.reply <- err
 		return

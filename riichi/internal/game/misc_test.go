@@ -211,11 +211,11 @@ func TestDoubleRonWithRiichiSticks(t *testing.T) {
 	applyDiscard(t, s, 0, "5p")
 	applyRon(t, s, 1, "5p")
 	applyRon(t, s, 2, "5p")
-	if s.Scores[1] != 27000 { // 1000 荣和 + 1000 立直棒
-		t.Fatalf("seat1 scores=%d want 27000", s.Scores[1])
+	if s.Scores[1] != 29900 { // 3900 荣和 + 1000 立直棒
+		t.Fatalf("seat1 scores=%d want 29900", s.Scores[1])
 	}
-	if s.Scores[2] != 26000 {
-		t.Fatalf("seat2 scores=%d want 26000（立直棒只给最近一家）", s.Scores[2])
+	if s.Scores[2] != 28900 {
+		t.Fatalf("seat2 scores=%d want 28900（立直棒只给最近一家）", s.Scores[2])
 	}
 }
 

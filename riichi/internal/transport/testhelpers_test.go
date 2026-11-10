@@ -21,14 +21,28 @@ import (
 const testSecret = "test-secret-0123456789abcdef"
 
 // newTestServer 起一个进程内服务（httptest）。
+//
+// AutoPassResponses=true 保持 S6 的兼容语义（响应窗口自动 pass），旧测试因此不受
+// task-14 的响应窗口交互影响；需要真打响应窗口的测试用 newResponseTestServer。
 func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := New(Config{
-		JWTSecret:    []byte(testSecret),
-		AgentTimeout: 200 * time.Millisecond,
-		Logger:       logger,
+	return newTestServerWithConfig(t, Config{
+		JWTSecret:         []byte(testSecret),
+		AgentTimeout:      200 * time.Millisecond,
+		AutoPassResponses: true,
 	})
+}
+
+// newTestServerWithConfig 用指定配置起进程内服务。
+func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, *httptest.Server) {
+	t.Helper()
+	if cfg.JWTSecret == nil {
+		cfg.JWTSecret = []byte(testSecret)
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New server: %v", err)
 	}
@@ -38,6 +52,16 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		srv.Close()
 	})
 	return srv, ts
+}
+
+// newResponseTestServer 起一个「真打模式」服务：响应窗口需要显式响应/超时。
+func newResponseTestServer(t *testing.T, responseTimeout time.Duration) (*Server, *httptest.Server) {
+	t.Helper()
+	return newTestServerWithConfig(t, Config{
+		JWTSecret:       []byte(testSecret),
+		AgentTimeout:    200 * time.Millisecond,
+		ResponseTimeout: responseTimeout,
+	})
 }
 
 // mustToken 为座位签发测试令牌。
@@ -190,18 +214,42 @@ func resumeFrom(t *testing.T, conn *websocket.Conn, lastSeq uint64) ([]wsMessage
 	}
 }
 
-// readEvents 连续读取 n 条 event 消息（忽略其它类型会直接失败）。
+// readEvents 连续读取 n 条 event 消息。
+//
+// 会跳过 task-14 新增的非事件消息（responses / response_window_end / agent_thought），
+// 其它意外类型仍视为失败。
 func readEvents(t *testing.T, conn *websocket.Conn, count int) []wsMessage {
 	t.Helper()
 	events := make([]wsMessage, 0, count)
 	for len(events) < count {
 		msg := readWS(t, conn)
-		if msg.Type != "event" {
+		switch msg.Type {
+		case "event":
+			events = append(events, msg)
+		case "responses", "response_window_end", "agent_thought":
+			continue
+		default:
 			t.Fatalf("期望 event，收到 type=%q code=%q message=%q", msg.Type, msg.Code, msg.Message)
 		}
-		events = append(events, msg)
 	}
 	return events
+}
+
+// collectMessageTypes 读取一条连接上的若干消息，返回出现过的类型（用于断言
+// responses / response_window_end / agent_thought 等新消息）。
+func collectMessageTypes(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[string]int {
+	t.Helper()
+	seen := map[string]int{}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(deadline)
+		var msg wsMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			break
+		}
+		seen[msg.Type]++
+	}
+	return seen
 }
 
 // assertContiguous 断言事件 seq 从 start 开始严格连续。

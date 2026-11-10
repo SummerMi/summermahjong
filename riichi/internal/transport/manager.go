@@ -41,8 +41,13 @@ type CreateSpec struct {
 type ManagerConfig struct {
 	Store        store.Store
 	AgentTimeout time.Duration
-	Logger       *slog.Logger
-	Metrics      *metrics
+	// AutoPassResponses=true 表示兼容模式：响应窗口全部自动 pass（S6 行为）；
+	// false（默认）表示真打模式：打牌/加杠后把响应选项推给人类座位、AI 自动决策。
+	AutoPassResponses bool
+	// ResponseTimeout 是人类响应窗口超时（超时按 pass 处理，0 表示默认 5s）。
+	ResponseTimeout time.Duration
+	Logger          *slog.Logger
+	Metrics         *metrics
 }
 
 // Manager 管理所有对局房间（单进程内存）。
@@ -93,7 +98,12 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Room, error) {
 		return nil, fmt.Errorf("%w: ruleset.red_fives 必须在 0..3", ErrInvalidRequest)
 	}
 
-	st, err := game.New(spec.Seed, rules)
+	st, err := game.NewWithOptions(spec.Seed, rules, game.Options{
+		// 真打模式：显式响应窗口；兼容模式则沿用「自动 pass」。
+		ManualResponses: !m.cfg.AutoPassResponses,
+		// 真实算点（rules.Evaluate/Score），S5b task-14 起为默认。
+		ScoreProvider: game.RulesScorer{},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("发起对局: %w", err)
 	}
@@ -113,12 +123,14 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Room, error) {
 	}
 
 	roomCfg := roomConfig{
-		store:        m.store,
-		agents:       agents,
-		agentNames:   names,
-		agentTimeout: m.cfg.AgentTimeout,
-		logger:       m.logger,
-		metrics:      m.metrics,
+		store:           m.store,
+		agents:          agents,
+		agentNames:      names,
+		agentTimeout:    m.cfg.AgentTimeout,
+		manualResponses: !m.cfg.AutoPassResponses,
+		responseTimeout: m.cfg.ResponseTimeout,
+		logger:          m.logger,
+		metrics:         m.metrics,
 	}
 	room := newRoom(id, st, meta, roomCfg)
 	if err := room.persistInitial(ctx); err != nil {

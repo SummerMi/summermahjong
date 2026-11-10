@@ -195,13 +195,16 @@ func (s *State) applyDiscardPhase(a Action) error {
 
 // legalDiscardActions 返回打牌阶段当前座位的全部合法动作。
 func (s *State) legalDiscardActions(seat Seat) []Action {
-	if seat != s.Turn || s.Drawn == nil {
+	if seat != s.Turn {
 		return nil
 	}
 	acts := make([]Action, 0, len(s.Hands[seat])+8)
 
-	// 立直后手牌固定：只能摸切；仍可自摸
+	// 立直后手牌固定：只能摸切；仍可自摸（立直后必然有摸牌）
 	if s.Riichi[seat] {
+		if s.Drawn == nil {
+			return nil
+		}
 		acts = append(acts, Action{Kind: ActDiscard, Seat: seat, Tile: *s.Drawn})
 		if s.canTsumo(seat) {
 			acts = append(acts, Action{Kind: ActTsumo, Seat: seat, Tile: *s.Drawn})
@@ -234,8 +237,11 @@ func (s *State) legalDiscardActions(seat Seat) []Action {
 }
 
 // doDiscard 执行打牌：移入手牌→牌河，然后打开响应窗口。
+//
+// 注意：吃/碰之后没有「摸到的牌」（Drawn == nil），此时也可以打牌；
+// 立直后的摸切限制只在 Drawn 存在时生效。
 func (s *State) doDiscard(seat Seat, tl tile.Tile, declaredRiichi bool) error {
-	if s.Phase != PhaseAwaitDiscard || seat != s.Turn || s.Drawn == nil {
+	if s.Phase != PhaseAwaitDiscard || seat != s.Turn {
 		return fmt.Errorf("%w: 当前不能打牌", ErrIllegalAction)
 	}
 	if !s.kuikaeAllowed(seat, tl.Kind) {
@@ -246,11 +252,11 @@ func (s *State) doDiscard(seat Seat, tl tile.Tile, declaredRiichi bool) error {
 		return fmt.Errorf("%w: 手牌中没有 %v", ErrIllegalAction, tl)
 	}
 	if s.Riichi[seat] && !declaredRiichi {
-		if tl != *s.Drawn {
-			return fmt.Errorf("%w: 立直后只能摸切 %v", ErrIllegalAction, *s.Drawn)
+		if s.Drawn == nil || tl != *s.Drawn {
+			return fmt.Errorf("%w: 立直后只能摸切", ErrIllegalAction)
 		}
 	}
-	tsumogiri := *s.Drawn == tl
+	tsumogiri := s.Drawn != nil && *s.Drawn == tl
 
 	hand := s.Hands[seat]
 	s.Hands[seat] = append(hand[:idx:idx], hand[idx+1:]...)
@@ -895,36 +901,13 @@ func (s *State) gonnaEnd() bool {
 
 // ── 牌型/听牌/振听辅助 ───────────────────────────────────────────
 
-// winShape 用 rules 判和牌，并把 gate.Meld 适配成 rules 期望的「14 张完整牌形」。
+// winShape 用 rules 判和牌（含副露拆解）。
 //
-// rules S3/S4 目前的 Decompose 入参约定是 14 张含和了牌的门清手牌（副露尚未支持），
-// 所以这里把副露按面子摊回手牌（杠只取 3 张参与牌型）再调用；等 rules 支持 melds 入参
-// （契约 v1.2 的 S5 适配项）后，把本函数替换成 Decompose(hand, rulesMelds, win) 即可。
+// 具体拆解策略见 score_rules.go 的 decomposeWin：门清直接调用 rules.Decompose；
+// 有副露时若 rules 尚未支持 melds 入参（task-13），走本地副露拆解兜底，
+// 保证明刻/暗杠的符数与门清判定正确。
 func winShape(hand []tile.Tile, melds []Meld, winning tile.Tile) (rules.WinShape, bool) {
-	if len(melds) == 0 {
-		return rules.Decompose(hand, nil, winning)
-	}
-	if len(hand)+3*len(melds) != 14 {
-		return rules.WinShape{}, false
-	}
-	flat := make([]tile.Tile, 0, 14)
-	flat = append(flat, hand...)
-	for _, meld := range melds {
-		tiles := meld.Tiles
-		if len(tiles) > 3 {
-			tiles = tiles[:3] // 杠按 1 组面子参与牌型
-		}
-		flat = append(flat, tiles...)
-	}
-	if len(flat) != 14 {
-		return rules.WinShape{}, false
-	}
-	shape, ok := rules.Decompose(flat, nil, winning)
-	if !ok || shape.Pattern != rules.PatternStandard {
-		// 有副露时七对/国士不成立
-		return rules.WinShape{}, false
-	}
-	return shape, true
+	return decomposeWin(hand, melds, winning)
 }
 
 // waitingTiles 计算一手「13-3*副露数」张手牌的听牌列表。

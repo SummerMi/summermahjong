@@ -247,8 +247,9 @@ func TestChankanRon(t *testing.T) {
 	if payload["chankan"] != true {
 		t.Fatalf("payload=%v，期望 chankan=true", payload)
 	}
-	if s.Scores[2] != 26000 || s.Scores[0] != 24000 {
-		t.Fatalf("抢杠点数=%v", s.Scores)
+	// 抢杠 1 翻 + 一气 2 翻 + 平和 1 翻 = 4 翻 30 符，荣和 7700
+	if s.Scores[2] != 32700 || s.Scores[0] != 17300 {
+		t.Fatalf("抢杠点数=%v，期望 seat2=32700 seat0=17300", s.Scores)
 	}
 }
 
@@ -288,9 +289,9 @@ func TestTsumoDealerRepeat(t *testing.T) {
 	if !hasEventKind(s, EventTsumo) || !hasEventKind(s, EventRoundEnd) {
 		t.Fatalf("事件=%v", eventKinds(s))
 	}
-	// 亲家自摸 1 翻 30 符：每家 500，共 1500；+2000 立直棒
-	if s.Scores[0] != 23000+1500+2000 {
-		t.Fatalf("scores[0]=%d，期望 26500", s.Scores[0])
+	// 一气 2 翻 + 平和 1 翻 + 门清自摸 1 翻 = 4 翻 20 符：亲家自摸每家 2600（共 7800）+2000 立直棒
+	if s.Scores[0] != 23000+7800+2000 {
+		t.Fatalf("scores[0]=%d，期望 32800", s.Scores[0])
 	}
 	if s.RiichiStix != 0 {
 		t.Fatalf("riichi sticks=%d want 0", s.RiichiStix)
@@ -321,9 +322,9 @@ func TestTsumoNonDealerRotates(t *testing.T) {
 	if s.LastDealerRepeat {
 		t.Fatal("闲家自摸不应连庄")
 	}
-	// 闲家自摸 1100：亲家 500 + 其他两家 300
-	if s.Scores[1] != 26100 {
-		t.Fatalf("scores[1]=%d，期望 26100", s.Scores[1])
+	// 4 翻 20 符闲家自摸：亲家 2600 + 其他两家各 1300，共 5200
+	if s.Scores[1] != 30200 {
+		t.Fatalf("scores[1]=%d，期望 30200", s.Scores[1])
 	}
 	if err := s.StartNextRound(); err != nil {
 		t.Fatalf("StartNextRound: %v", err)
