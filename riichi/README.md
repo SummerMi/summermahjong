@@ -211,6 +211,9 @@ python web/serve.py --port 8098 --target http://127.0.0.1:8099
 接口与事件/协议定义见 [`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md)（冻结 v1.3，改契约需 ADR）。
 依赖方向铁律：`transport → game → rules → tile`，只能向下；`agent` 只读 `game`，禁止回写状态。
 
+
+> 对局推进：`Config.AutoAdvanceRounds` 默认开启——`round_end` 后自动开下一局，一路打到南 4 / トビ終了并广播 `game_end`（含 `ranks` 终局顺位）；单局调试可显式传 `false`。
+
 ## 已知限制（诚实口径，别在面试里被拆穿）
 
 1. **立直率 ≈ 0（实测四个座位都是 0.0%）**：S8 的策略只输出 `ActDiscard`，不选 `ActRiichi`，`random` 也一样。引擎侧立直/振听已实现，缺的是策略层动作选择。
