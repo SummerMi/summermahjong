@@ -25,6 +25,7 @@ package rules
 
 import (
 	"slices"
+	"sort"
 
 	"summermahjong/riichi/internal/tile"
 )
@@ -74,8 +75,8 @@ const (
 // 与 package game 的 game.Meld 字段对齐（Kind/Tiles），但在这里独立声明：
 // 契约 §1 要求 rules 不能 import game（避免依赖倒挂），game 层调用时逐字段转换即可。
 //
-// S3 第一版只支持门清（melds 传 nil / 空切片）；副露拆解在 S5 实现，
-// 届时 Kind 取 MeldChi/MeldPon/MeldKan*，Tiles 为该副露包含的牌（杠为 4 张）。
+// Kind 取 MeldChi / MeldPon / MeldKanDaiminkan / MeldKanShouminkan / MeldKanAnkan；
+// Tiles 为该副露包含的牌：吃/碰 3 张，杠 4 张。明暗由 Kind 决定（暗杠是唯一暗面副露）。
 type Meld struct {
 	Kind  string
 	Tiles []tile.Tile
@@ -116,8 +117,7 @@ type WinShape struct {
 
 // IsWinning 报告手牌是否和牌；等价于 Decompose 的 ok。
 //
-// 参数约定与 Decompose 相同：hand 是完整的 14 张门清手牌（含和了牌），
-// melds 目前必须为空（S3 只支持门清）。
+// 参数约定与 Decompose 相同：hand 只含暗牌（含和了牌），melds 是已经副露的面子。
 func IsWinning(hand []tile.Tile, melds []Meld, winning tile.Tile) bool {
 	return IsWinningWithOptions(hand, melds, winning, Options{})
 }
@@ -132,16 +132,19 @@ func IsWinningWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opt
 //
 // 使用默认规则（日麻严格七对语义）；需要 v1（中国规则）语义时用 DecomposeWithOptions。
 //
-// 参数约定：
-//   - hand：完整的 14 张门清手牌，**必须包含和了牌**（13 张听牌形请由上层补上和了牌后调用，
-//     例如 append(hand, winning)）；这样 13/14 张的语义只有一种，不会出现「少一张也算胡」。
-//   - melds：已经副露的面子。S3 第一版只支持门清，melds 非空直接返回 false（S5 再实现）。
-//   - winning：和了牌。其 Kind 必须出现在 hand 中（用于确定待ち类型；不要求是同一张物理牌）。
+// 参数约定（S5b 起支持副露）：
+//   - hand：**暗牌部分**，必须包含和了牌（和了牌由上层补进暗牌）；张数 = 14 - 3*len(melds)。
+//     例：无副露 14 张；1 组副露 11 张；4 组副露时只剩将牌 2 张。
+//   - melds：已经副露的面子，0-4 组。吃/碰 3 张，杠（含大明杠/加杠/暗杠）4 张。
+//     返回的 WinShape.Melds 会保留 Kind / Tiles / Open：吃、碰、明杠 Open=true，暗杠 Open=false；
+//     暗牌里拆出来的面子 Open=false。
+//   - winning：和了牌。其 Kind 必须出现在 hand 中（用于确定待ち类型）。
 //
-// 返回 ok=false 的典型情况：牌数不是 14、牌面非法（Kind 越界 / 同种超过 4 张）、
-// 不和牌、winning 与 hand 不匹配、melds 非空。
+// 返回 ok=false 的典型情况：暗牌张数不对、副露结构非法（类型/张数/牌面不合法）、
+// 牌面非法（Kind 越界 / 同种超过 4 张）、不和牌、winning 与暗牌不匹配。
 //
-// 牌型优先级与 v1 一致：标准型优先于七对（如 11223344556677m 返回 standard），国士不与前两者重叠。
+// 牌型优先级与 v1 一致：标准型优先于七对（如 11223344556677m 返回 standard）；
+// 有副露时七对/国士不可能成立，只做标准型拆解。
 func Decompose(hand []tile.Tile, melds []Meld, winning tile.Tile) (WinShape, bool) {
 	return DecomposeWithOptions(hand, melds, winning, Options{})
 }
@@ -149,14 +152,18 @@ func Decompose(hand []tile.Tile, melds []Meld, winning tile.Tile) (WinShape, boo
 // DecomposeWithOptions 是带规则选项的 Decompose。
 //
 // 唯一的语义开关是七对子口径（见 Options）：
-// 默认日麻严格语义「7 种不同的对子」；SevenPairsCompat=true 时按 v1 中国规则
+// 默认日麻严格语义「7 种不同的对子」；SevenPairsStrict=false 时按 v1 中国规则
 // 「4 张相同算两对」，用于 v1 金标对拍。
 func DecomposeWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opts Options) (WinShape, bool) {
-	// S3 只支持门清；副露后和牌的用例见 win_melds_test.go（S5 实现后启用）。
-	if len(melds) != 0 {
+	if len(melds) > meldsRequired {
 		return WinShape{}, false
 	}
-	if len(hand) != winHandSize {
+	called, ok := buildCalledMelds(melds)
+	if !ok {
+		return WinShape{}, false
+	}
+	// 暗牌张数：14 张和了形里，每组副露占掉 3 张（杠多出的那张在副露内部）。
+	if len(hand) != winHandSize-3*len(melds) {
 		return WinShape{}, false
 	}
 
@@ -164,45 +171,62 @@ func DecomposeWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opt
 	if !ok {
 		return WinShape{}, false
 	}
-	// 和了牌必须是 14 张里出现过的牌种（否则说明调用方传错了牌）。
+	// 和了牌必须是暗牌里出现过的牌种（副露的牌不可能再被和了）。
 	if winning.Kind >= tile.NumKinds || c[winning.Kind] == 0 {
 		return WinShape{}, false
 	}
+	if !withinDeck(hand, called) {
+		return WinShape{}, false
+	}
 
-	if shape, ok := decomposeStandard(c, winning); ok {
-		shape.Tiles = slices.Clone(hand)
-		applyAka(&shape, hand, winning)
-		return shape, true
-	}
-	if isSevenPairs(c, !opts.StrictSevenPairs()) {
-		shape := WinShape{
-			Jantou:  winning,
-			Wait:    WaitTanki,
-			Pattern: PatternSevenPairs,
-			Tiles:   slices.Clone(hand),
+	required := meldsRequired - len(called)
+	if required == meldsRequired {
+		// 门清：标准型 → 七对 → 国士（与 v1 一致的标准型优先）。
+		if jantou, closedMelds, wait, ok := decomposeClosedStandard(c, required, winning.Kind); ok {
+			shape := buildStandardShape(hand, called, jantou, closedMelds, wait, winning)
+			return shape, true
 		}
-		applyAka(&shape, hand, winning)
-		return shape, true
-	}
-	if isKokushi(c) {
-		shape := WinShape{
-			Jantou:  winning,
-			Wait:    WaitTanki,
-			Pattern: PatternKokushi,
-			Tiles:   slices.Clone(hand),
+		if isSevenPairs(c, !opts.StrictSevenPairs()) {
+			shape := WinShape{
+				Jantou:  winning,
+				Wait:    WaitTanki,
+				Pattern: PatternSevenPairs,
+				Tiles:   slices.Clone(hand),
+			}
+			applyAka(&shape, hand, winning)
+			return shape, true
 		}
-		applyAka(&shape, hand, winning)
-		return shape, true
+		if isKokushi(c) {
+			shape := WinShape{
+				Jantou:  winning,
+				Wait:    WaitTanki,
+				Pattern: PatternKokushi,
+				Tiles:   slices.Clone(hand),
+			}
+			applyAka(&shape, hand, winning)
+			return shape, true
+		}
+		return WinShape{}, false
 	}
-	return WinShape{}, false
+
+	// 有副露时只可能是标准型：暗牌里拆出 4-len(melds) 组面子 + 1 个将牌。
+	jantou, closedMelds, wait, ok := decomposeClosedStandard(c, required, winning.Kind)
+	if !ok {
+		return WinShape{}, false
+	}
+	return buildStandardShape(hand, called, jantou, closedMelds, wait, winning), true
 }
 
-// decomposeStandard 尝试把计数数组拆成「4 面子 + 1 将」；成功时返回待ち类型最优的那种拆解。
-func decomposeStandard(c counts, winning tile.Tile) (WinShape, bool) {
+// decomposeClosedStandard 从暗牌计数里拆出「required 组面子 + 1 个将牌」。
+//
+// 返回待ち类型最优的那种拆解（优先级见 classifyWait）。
+func decomposeClosedStandard(c counts, required int, winning tile.Kind) (tile.Tile, []MeldShape, WaitType, bool) {
 	var (
-		best    WinShape
-		bestPri = int(^uint(0) >> 1) // 最大 int，等待被更小的优先级替换
-		found   bool
+		bestJantou tile.Tile
+		bestMelds  []MeldShape
+		bestWait   WaitType
+		bestPri    = int(^uint(0) >> 1) // 最大 int，等待被更小的优先级替换
+		found      bool
 	)
 
 	for pair := 0; pair < tile.NumKinds; pair++ {
@@ -212,37 +236,130 @@ func decomposeStandard(c counts, winning tile.Tile) (WinShape, bool) {
 		rest := c
 		rest[pair] -= 2
 		jantou := tile.Tile{Kind: tile.Kind(pair)}
-		var cur [4]MeldShape
+		cur := make([]MeldShape, required)
 
-		enumerateMeldShapes(rest, 0, &cur, func(melds [4]MeldShape) {
-			wait, pri, ok := classifyWait(jantou, melds, winning.Kind)
+		enumerateMeldShapes(rest, 0, required, cur, func(melds []MeldShape) {
+			wait, pri, ok := classifyWait(jantou, melds, winning)
 			if !ok || pri >= bestPri {
 				return
 			}
-			shape := WinShape{
-				Jantou:  jantou,
-				Melds:   make([]MeldShape, 4),
-				Wait:    wait,
-				Pattern: PatternStandard,
-			}
-			copy(shape.Melds, melds[:])
-			best, bestPri, found = shape, pri, true
+			bestJantou = jantou
+			bestMelds = append([]MeldShape(nil), melds...)
+			bestWait = wait
+			bestPri = pri
+			found = true
 		})
 	}
-	if !found {
-		return WinShape{}, false
-	}
-	return best, true
+	return bestJantou, bestMelds, bestWait, found
 }
 
-// enumerateMeldShapes 把剩余计数拆成 4 组面子；每找到一个完整拆解就回调 visit。
+// buildStandardShape 组装标准型的 WinShape：
+// 先用 applyAka 只处理暗牌部分（副露牌的赤宝牌标记由调用方直接带进来），再合并副露、排序、记录全部牌。
+func buildStandardShape(hand []tile.Tile, called []MeldShape, jantou tile.Tile, closed []MeldShape, wait WaitType, winning tile.Tile) WinShape {
+	shape := WinShape{Jantou: jantou, Melds: closed, Wait: wait, Pattern: PatternStandard}
+	applyAka(&shape, hand, winning)
+
+	merged := make([]MeldShape, 0, len(called)+len(closed))
+	merged = append(merged, called...)
+	merged = append(merged, shape.Melds...)
+	sortMelds(merged)
+	shape.Melds = merged
+	shape.Tiles = handAndMeldTiles(hand, called)
+	return shape
+}
+
+// buildCalledMelds 校验并转换 Decompose 的 melds 入参。
+//
+// 规则（契约 §2.3 的副露种类）：
+//   - chi：3 张同花色连续牌，明面（Open=true）；
+//   - pon：3 张同种牌，明面；
+//   - kan_daiminkan / kan_shouminkan：4 张同种牌，明面；
+//   - kan_ankan：4 张同种牌，暗面（Open=false，不破坏门清）。
+//
+// 任一结构非法即返回 ok=false。
+func buildCalledMelds(melds []Meld) ([]MeldShape, bool) {
+	out := make([]MeldShape, 0, len(melds))
+	for _, meld := range melds {
+		for _, t := range meld.Tiles {
+			if t.Kind >= tile.NumKinds {
+				return nil, false
+			}
+		}
+		tiles := slices.Clone(meld.Tiles)
+		switch meld.Kind {
+		case MeldChi:
+			if len(tiles) != 3 || !isChiTiles(tiles) {
+				return nil, false
+			}
+			out = append(out, MeldShape{Kind: MeldChi, Tiles: tiles, Open: true})
+		case MeldPon:
+			if len(tiles) != 3 || !isPonTiles(tiles) {
+				return nil, false
+			}
+			out = append(out, MeldShape{Kind: MeldPon, Tiles: tiles, Open: true})
+		case MeldKanDaiminkan, MeldKanShouminkan:
+			if len(tiles) != 4 || !isPonTiles(tiles) {
+				return nil, false
+			}
+			out = append(out, MeldShape{Kind: meld.Kind, Tiles: tiles, Open: true})
+		case MeldKanAnkan:
+			if len(tiles) != 4 || !isPonTiles(tiles) {
+				return nil, false
+			}
+			out = append(out, MeldShape{Kind: MeldKanAnkan, Tiles: tiles, Open: false})
+		default:
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// sortMelds 把面子按首张牌升序排列，保证拆解结果稳定可复现。
+func sortMelds(melds []MeldShape) {
+	sort.SliceStable(melds, func(i, j int) bool {
+		return melds[i].Tiles[0].Kind < melds[j].Tiles[0].Kind
+	})
+}
+
+// handAndMeldTiles 返回「暗牌 + 副露牌」的完整物理牌列表（含杠的第 4 张）。
+func handAndMeldTiles(hand []tile.Tile, called []MeldShape) []tile.Tile {
+	out := slices.Clone(hand)
+	for _, meld := range called {
+		out = append(out, meld.Tiles...)
+	}
+	return out
+}
+
+// withinDeck 校验「暗牌 + 副露牌」合在一起每种牌不超过 4 张。
+func withinDeck(hand []tile.Tile, called []MeldShape) bool {
+	var c counts
+	for _, t := range hand {
+		if t.Kind >= tile.NumKinds {
+			return false
+		}
+		c[t.Kind]++
+	}
+	for _, meld := range called {
+		for _, t := range meld.Tiles {
+			c[t.Kind]++
+		}
+	}
+	for _, n := range c {
+		if n > tile.CopiesPerKind {
+			return false
+		}
+	}
+	return true
+}
+
+// enumerateMeldShapes 把剩余计数拆成 required 组面子；每找到一个完整拆解就回调 visit。
 //
 // 每次固定处理「剩余牌里下标最小的那张」：它只能作为刻子的首张或顺子的首张，
 // 两个分支覆盖全部合法拆法。计数数组按值传递，分支之间互不影响。
-func enumerateMeldShapes(rest counts, depth int, cur *[4]MeldShape, visit func([4]MeldShape)) {
-	if depth == meldsRequired {
+func enumerateMeldShapes(rest counts, depth, required int, cur []MeldShape, visit func([]MeldShape)) {
+	if depth == required {
 		if allZero(rest) {
-			visit(*cur)
+			visit(cur)
 		}
 		return
 	}
@@ -258,7 +375,7 @@ func enumerateMeldShapes(rest counts, depth int, cur *[4]MeldShape, visit func([
 		next[idx] -= 3
 		kind := tile.Kind(idx)
 		cur[depth] = MeldShape{Kind: MeldPon, Tiles: []tile.Tile{{Kind: kind}, {Kind: kind}, {Kind: kind}}}
-		enumerateMeldShapes(next, depth+1, cur, visit)
+		enumerateMeldShapes(next, depth+1, required, cur, visit)
 	}
 
 	// 分支二：顺子（同花色连续三张）。字牌（下标 ≥ 27）与跨花色都不允许。
@@ -272,16 +389,17 @@ func enumerateMeldShapes(rest counts, depth int, cur *[4]MeldShape, visit func([
 			{Kind: tile.Kind(idx + 1)},
 			{Kind: tile.Kind(idx + 2)},
 		}}
-		enumerateMeldShapes(next, depth+1, cur, visit)
+		enumerateMeldShapes(next, depth+1, required, cur, visit)
 	}
 }
 
-// classifyWait 判断和了牌落在拆解结果的哪一组，得到待ち类型与优先级（数字越小越优先）。
+// classifyWait 判断和了牌落在**暗牌拆解结果**的哪一组，得到待ち类型与优先级（数字越小越优先）。
 //
+// 只传入暗牌里拆出来的面子：副露是更早完成的动作，和了牌不可能落在其中。
 // 同一手牌可能有多种拆解，导致待ち类型不唯一（例如 12345m 等 3m 既是两面也是边张）。
 // 这里按「两面 > 嵌张 > 边张 > 双碰 > 单骑」取一种：两面待ち是平和判定的常见前提，
 // 优先返回它对 S4 计分更友好；真正的最终取舍由 S4 按得点最大化决定。
-func classifyWait(jantou tile.Tile, melds [4]MeldShape, winning tile.Kind) (WaitType, int, bool) {
+func classifyWait(jantou tile.Tile, melds []MeldShape, winning tile.Kind) (WaitType, int, bool) {
 	best := WaitType("")
 	bestPri := int(^uint(0) >> 1)
 	found := false

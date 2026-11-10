@@ -478,12 +478,16 @@ func validateShape(shape WinShape) error {
 		}
 		switch meld.Kind {
 		case MeldChi:
-			if isKan || !isChiTiles(meld.Tiles) {
+			if isKan || len(meld.Tiles) != 3 || !isChiTiles(meld.Tiles) {
 				return fmt.Errorf("%w: 第 %d 组面子不是合法顺子", ErrInvalidShape, i)
 			}
-		case MeldPon, MeldKanDaiminkan, MeldKanShouminkan, MeldKanAnkan:
-			if !isPonTiles(meld.Tiles) {
-				return fmt.Errorf("%w: 第 %d 组面子不是合法刻子/杠", ErrInvalidShape, i)
+		case MeldPon:
+			if isKan || len(meld.Tiles) != 3 || !isPonTiles(meld.Tiles) {
+				return fmt.Errorf("%w: 第 %d 组面子不是合法刻子", ErrInvalidShape, i)
+			}
+		case MeldKanDaiminkan, MeldKanShouminkan, MeldKanAnkan:
+			if !isKan || !isPonTiles(meld.Tiles) {
+				return fmt.Errorf("%w: 第 %d 组面子不是合法杠（必须 4 张）", ErrInvalidShape, i)
 			}
 		default:
 			return fmt.Errorf("%w: 第 %d 组面子类型未知 %q", ErrInvalidShape, i, meld.Kind)

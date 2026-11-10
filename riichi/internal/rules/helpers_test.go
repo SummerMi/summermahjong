@@ -63,17 +63,16 @@ func akaCounts(hand []tile.Tile) [tile.NumKinds]int {
 	return c
 }
 
-// validMeldShape 报告一组拆解出的面子是否合法：刻子三张相同，顺子同花色连续三张。
+// validMeldShape 报告一组拆解出的面子是否合法：
+// 刻子三张相同、顺子同花色连续三张、杠四张相同（契约 v1.2 起 Tiles 变长）。
 func validMeldShape(m MeldShape) bool {
-	a, b, c := m.Tiles[0].Kind, m.Tiles[1].Kind, m.Tiles[2].Kind
 	switch m.Kind {
 	case MeldPon:
-		return a == b && b == c
+		return len(m.Tiles) == 3 && isPonTiles(m.Tiles)
 	case MeldChi:
-		if a.Suit() == tile.Honor || a.Suit() != b.Suit() || b.Suit() != c.Suit() {
-			return false
-		}
-		return b == a+1 && c == b+1
+		return len(m.Tiles) == 3 && isChiTiles(m.Tiles)
+	case MeldKanDaiminkan, MeldKanShouminkan, MeldKanAnkan:
+		return len(m.Tiles) == 4 && isPonTiles(m.Tiles)
 	default:
 		return false
 	}

@@ -224,10 +224,10 @@ func TestDecomposeInvalidInput(t *testing.T) {
 		{"同种 5 张", overCopies, nil, tileFromName(t, "1m")},
 		{"和了牌不在手牌", fourteen, nil, tileFromName(t, "1z")},
 		{"和了牌 Kind 越界", fourteen, nil, tile.Tile{Kind: tile.NumKinds}},
-		{"副露非空（S3 不支持）", fourteen, []Meld{{Kind: MeldPon, Tiles: []tile.Tile{
+		{"副露与暗牌张数不匹配", fourteen, []Meld{{Kind: MeldPon, Tiles: []tile.Tile{
 			tileFromName(t, "1p"), tileFromName(t, "1p"), tileFromName(t, "1p"),
 		}}}, tileFromName(t, "9s")},
-		{"副露 + 11 张门清", eleven, []Meld{{Kind: MeldPon, Tiles: []tile.Tile{
+		{"未知副露类型", eleven, []Meld{{Kind: "foo", Tiles: []tile.Tile{
 			tileFromName(t, "1p"), tileFromName(t, "1p"), tileFromName(t, "1p"),
 		}}}, tileFromName(t, "9s")},
 	}

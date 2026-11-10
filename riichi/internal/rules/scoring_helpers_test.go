@@ -148,3 +148,92 @@ func requireNoYaku(t *testing.T, yaku []Yaku, name string) {
 		t.Fatalf("不应出现役种 %q，实际役种：%v", name, yakuNames(yaku))
 	}
 }
+
+// verifyShapeWithMelds 校验带副露的拆解结果：
+//   - 4 组面子 + 将牌，用牌总数 = 暗牌 + 副露（杠为 4 张）；
+//   - 每一条入参副露都能在 shape.Melds 里找到，且 Open 正确（暗杠 false，其余 true）；
+//   - 暗牌拆出来的面子 Open 全为 false。
+func verifyShapeWithMelds(t *testing.T, hand []tile.Tile, melds []Meld, shape WinShape, winning tile.Tile) {
+	t.Helper()
+	if shape.Wait == "" {
+		t.Fatal("待ち类型为空")
+	}
+	if kindCounts(flattenShape(shape))[winning.Kind] == 0 {
+		t.Fatalf("拆解结果里找不到和了牌 %v", winning)
+	}
+
+	// 全部物理牌 = 暗牌 + 副露牌。
+	var wantTiles [tile.NumKinds]int
+	for _, x := range hand {
+		wantTiles[x.Kind]++
+	}
+	for _, meld := range melds {
+		for _, x := range meld.Tiles {
+			wantTiles[x.Kind]++
+		}
+	}
+	if got := kindCounts(shape.Tiles); got != wantTiles {
+		t.Fatalf("shape.Tiles 与暗牌+副露不一致：%v vs %v", got, wantTiles)
+	}
+
+	// 结构：4 组面子 + 将牌，正好用完所有牌。
+	var gotTiles [tile.NumKinds]int
+	gotTiles[shape.Jantou.Kind] += 2
+	for _, meld := range shape.Melds {
+		if !validMeldShape(meld) {
+			t.Fatalf("拆解出的面子非法：%+v", meld)
+		}
+		for _, x := range meld.Tiles {
+			gotTiles[x.Kind]++
+		}
+	}
+	if gotTiles != wantTiles {
+		t.Fatalf("面子+将牌的用牌与暗牌+副露不一致：%v vs %v", gotTiles, wantTiles)
+	}
+
+	// 每条入参副露都要原样保留（Kind/Tiles/Open）。
+	for _, called := range melds {
+		wantOpen := called.Kind != MeldKanAnkan
+		found := false
+		for _, meld := range shape.Melds {
+			if meld.Kind != called.Kind || len(meld.Tiles) != len(called.Tiles) {
+				continue
+			}
+			same := true
+			for i := range called.Tiles {
+				if meld.Tiles[i].Kind != called.Tiles[i].Kind {
+					same = false
+					break
+				}
+			}
+			if !same {
+				continue
+			}
+			if meld.Open != wantOpen {
+				t.Fatalf("副露 %q 的 Open = %v，期望 %v", called.Kind, meld.Open, wantOpen)
+			}
+			found = true
+			break
+		}
+		if !found {
+			t.Fatalf("拆解结果里没有保留副露：%+v（shape=%+v）", called, shape.Melds)
+		}
+	}
+
+	// 其余（暗牌拆出的）面子必须是暗面。
+	openExpected := 0
+	for _, called := range melds {
+		if called.Kind != MeldKanAnkan {
+			openExpected++
+		}
+	}
+	openActual := 0
+	for _, meld := range shape.Melds {
+		if meld.Open {
+			openActual++
+		}
+	}
+	if openActual != openExpected {
+		t.Fatalf("Open 面子数 = %d，期望 %d（仅副露明面）", openActual, openExpected)
+	}
+}
