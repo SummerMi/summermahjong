@@ -1,66 +1,184 @@
-﻿# riichi — 日麻多智能体服务（v2）
+# riichi — 日麻多智能体服务（v2）
 
-> 单人对三个 AI 打日麻（天凤式）；同时是「Go 后端 + Agent」的作品集项目。
-> 设计文档见 [`docs/riichi-架构与里程碑-20261110.md`](../docs/riichi-架构与里程碑-20261110.md)。
+> 单人对三个 AI 打日麻（天鳳式）；同时是「Go 后端 + Agent」方向的作品集项目。
+> 设计文档：[`docs/riichi-架构与里程碑-20261110.md`](../docs/riichi-架构与里程碑-20261110.md) ·
+> 接口契约：[`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md) ·
+> 面试讲法（3 分钟逐字稿 + 15 个追问）：[`docs/riichi-面试讲法-20261110.md`](../docs/riichi-面试讲法-20261110.md)
 
-## 目标
+## 这是什么
 
-1. **规则引擎**：Go 实现日麻完整规则（136 牌 + 王牌/宝牌、吃碰杠、立直/振听、30+ 役种、符与点数、连庄/流局），事件溯源 + seed 可复现。
-2. **对局服务**：HTTP + WS 事件流（`seq`/`last_seq` 断线续传）、JWT 座位绑定、事件表 + 快照 + 回放。
-3. **多智能体**：统一 `Decide(Observation) → Action`，接入随机/向听/防守/搜索四类策略，三种打风（速攻/門前/守備）。
-4. **评测**：固定 seed 自对弈，输出和牌率/放铳率/平均顺位/决策 P95 与 ELO。
-5. **LLM + MCP**：规则工具（向听/有效牌/危险度/点数）以 MCP server 暴露，LLM 在 top-k 候选上重排并解释。
+一个 **Go 单体服务**：真实规则引擎（41 役种 + 符 + 点数）+ 事件溯源对局服务（HTTP/WS、断线续传）+ 多策略 AI（13 个工厂名）+ 自对弈评测（指标 + ELO）+ MCP 规则工具层（5 个工具）+ 最小牌桌网页。
+实现 11,382 行 / 测试 12,087 行（105 个 `.go` 文件），`tile` 包覆盖率 100%。
 
 ## 目录
 
 ```
 cmd/
-  riichi-server/   HTTP + WS 对局服务（待实现）
-  riichi-mcp/      MCP server，暴露规则工具（待实现）
-  riichi-eval/     自对弈评测 CLI（待实现）
+  riichi-server/   HTTP + WS 对局服务（JWT 座位绑定、Room actor、真打响应窗口）
+  riichi-eval/     进程内自对弈评测 CLI（指标 + 95% CI + Bradley-Terry ELO + 报告）
+  riichi-mcp/      MCP 规则工具层（stdio JSON-RPC，5 个工具，纯标准库）
 internal/
-  tile/            牌、牌山、赤宝牌、王牌（M0 完成）
-  rules/           役种、符、点数、振听、立直（M1-M2）
-  game/            对局状态机（M1）
-  agent/           Agent 接口与四类策略（M4），llm/ 子包（M6）
-  eval/            自对弈与指标（M5）
-  store/           内存 / Redis / MySQL（M3）
-  transport/       WS/HTTP 协议（M3）
-  replay/          事件日志与快照（M3）
+  tile/            牌、牌山、赤宝牌、王牌、SplitMix64 确定性洗牌（100%）
+  rules/           判胡拆解、向听、41 役、符、点数（96.2%）
+  game/            状态机：摸打/副露/立直/振听/响应窗口/和了/流局/连庄（92.7%）
+  agent/           13 个工厂名（random / shanten / defense / search × 打风）+ 超时回退（93.7%）
+  agent/llm/       OpenAI 兼容 LLM Agent：top-k 候选重排 + 回退（93.2%）
+  eval/            自对弈驱动、指标、ELO、报告（90.0%）
+  store/           Store 接口 + Memory / MySQL / Redis 三实现 + 共用契约测试
+  transport/       HTTP/WS、seq 续传、JWT、Room actor、指标（77.9%）
 testdata/          金标牌谱与 fixture
 ```
 
-## 当前状态（S1–S3、S6、S7 完成）
+## 当前状态（S1–S11 完成，2026-11-10 收口）
 
 | 包 | 内容 | 覆盖 |
 |---|---|---|
 | `internal/tile` | 34 种牌 + 赤宝牌、确定性洗牌（SplitMix64 + Fisher-Yates）、牌山/王牌/岭上/宝牌指示 | **100%** |
-| `internal/rules` | 判胡拆解 + 向听 + **41 役种/符/点数**（29 手金标）；v1 金标回归 39/39 | **94.5%** |
-| `internal/game` | 对局流程：副露/立直/振听/响应窗口/和了/流局/连庄（71 用例，整局脚本+回放一致） | **92.2%** |
-| `internal/agent` | 四类策略（随机/向听/防守/搜索）× 三种打风 + 超时回退 + 工厂（13 个名字） | **93.7%** |
-| `internal/store` | Store 接口 + Memory 实现 + 契约套件；sql（MySQL）/redis 同一套契约测试 | memory 89.7% / sql 80.7%* / redis 85.6% |
-| `internal/transport` + `cmd/riichi-server` | HTTP/WS 事件流、seq 断线续传、JWT 座位、Room actor、200 并发建局 | **75.9%** |
+| `internal/rules` | 判胡拆解 + 向听 + **41 役种/符/点数**（29 手金标）；v1 金标回归 39/39 | **96.2%** |
+| `internal/game` | 副露/立直/振听/**显式响应窗口**（ron>pon/kan>chi）/和了/流局/连庄；整局脚本 + 回放逐字段一致 | **92.7%** |
+| `internal/agent` | 四类策略（随机/向听/防守/搜索）× 三种打风 + 超时回退 + 工厂（**13 个名字**） | **93.7%** |
+| `internal/agent/llm` | top-k 候选重排 + 解析/合法性校验 + 回退 + 统计（无 key 自动 Mock） | 93.2% |
+| `internal/eval` | 自对弈驱动、和了/放铳/顺位/立直率、决策 P50/P95、95% CI、BT-ELO | 90.0% |
+| `internal/store` | Store 接口 + Memory（89.7%）/ Redis（85.6%）/ MySQL（需 `MYSQL_TEST_URL`）同一套契约测试 | 见左 |
+| `internal/transport` | HTTP/WS 事件流、`seq` 续传、JWT 座位、Room actor、响应窗口交互、指标 | **77.9%** |
+| `cmd/riichi-mcp` | 5 个规则工具（shanten / ukeire / safety / score / yaku_potential） | 88.3% |
 
-\* sql 需要 `MYSQL_TEST_URL`，未设置时 9 个用例 skip（默认零依赖）。
+> 覆盖率口径：`go test ./... -cover`（`-cover` 是语句覆盖率）。
+> `sql` 包在**没设** `MYSQL_TEST_URL` 时全部用例 skip，所以显示 0.0%——真连 MySQL 5.7.44 时约 80.7%（见契约 §5）。
+> 本表数字与 `go test ./... -cover` 输出一致，改代码后请同步更新。
 
 ## 跑起来
 
-`ash
+四段命令，全部在 `riichi/` 下执行（Go 1.25+）。
+
+### 1）跑一局：起服务 + 建局 + 打一张牌
+
+```bash
 cd riichi
-go test ./... -count=1 -cover          # 全绿
-go run ./cmd/riichi-server -addr 127.0.0.1:8099 -jwt-secret dev -issue-token 0
-# 另开终端：
-curl -s -X POST localhost:8099/api/v1/games -H "Authorization: Bearer <token>" \
+
+# 终端 A：起服务（demo 用 dev 密钥；生产必须覆盖 RIICHI_JWT_SECRET）
+go run ./cmd/riichi-server -addr 127.0.0.1:8099 -jwt-secret dev -cors "*"
+# → riichi-server 启动 addr=127.0.0.1:8099 agent_timeout=500ms cors=*
+
+# 终端 B：签一个座位 0 的 JWT（2h 有效）
+go run ./cmd/riichi-server -jwt-secret dev -issue-token 0
+# → eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9....（一整行）
+
+TOKEN=<粘贴上面那行令牌>
+
+# 建一局：seed 固定 → 牌局可复现；agents 第 0 位是 human，其余三家 AI
+curl -s -X POST http://127.0.0.1:8099/api/v1/games \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"seed":42,"agents":["human","random","random","random"]}'
-`
+# → {"game_id":"...","seed":42,"seq":2,"agents":[...],"ruleset":{...},"created_at":"..."}
 
-- WS：`/api/v1/ws/games/{id}?seat=0&token=<token>`，连上后先发 `{"type":"resume","last_seq":0}` 拿历史事件。
-- 事件流、错误码、续传语义见 `docs/riichi-接口契约-20261110.md` §6/§7；实现说明见 `internal/transport/doc.go`。
+GAME=<上面的 game_id>
 
-## 契约
-接口与事件/协议定义见 [`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md)（冻结 v1，改契约需 ADR）。
+# 看权威状态（只给本座位手牌 + legal_actions）
+curl -s "http://127.0.0.1:8099/api/v1/games/$GAME" -H "Authorization: Bearer $TOKEN"
+# → {"game_id":"...","seq":2,"phase":"await_discard","turn":0,"wall_remaining":69,
+#    "hand":["P","9p",...],"drawn":"9m","legal_actions":[{"kind":"discard","tile":"P"},...],...}
+
+# 出牌没有 HTTP 接口，走 WS（见下方协议）；HTTP 侧只有「建局 / 查状态 / 全量事件 / 指标」
+
+# 全量事件（回放）/ 单局指标 / 进程指标 / 健康检查
+curl -s "http://127.0.0.1:8099/api/v1/games/$GAME/replay" -H "Authorization: Bearer $TOKEN"
+curl -s "http://127.0.0.1:8099/api/v1/games/$GAME/metrics" -H "Authorization: Bearer $TOKEN"
+curl -s http://127.0.0.1:8099/metrics
+curl -s http://127.0.0.1:8099/healthz          # → {"status":"ok"}
+```
+
+- WS：`/api/v1/ws/games/{id}?seat=0&token=<token>`，连上后**先发** `{"type":"resume","last_seq":0}` 拿历史事件，再发 `{"type":"action","seq":N,"action_id":"uuid","action":{...}}` 出牌。
+- 事件流、错误码、续传语义见契约 §6/§7；实现说明见 `internal/transport/doc.go`。
+
+### 2）跑评测：自对弈 + 指标 + ELO
+
+```bash
+cd riichi
+
+# 验收口径：20 场半荘（seed 1-20），报告写到 .tmp-eval（已被 git exclude，不会误提交）
+go run ./cmd/riichi-eval --count 20 --out .tmp-eval
+
+# 默认：seed 1-100、四家 shanten:attack / defense:defense / search:closed / random
+go run ./cmd/riichi-eval --seeds 1-100
+
+# 换 agent 组合 / 调并发 / 只打一局 smoke
+go run ./cmd/riichi-eval --seeds 1-50 --agents shanten:attack,shanten:attack,defense:defense,search:closed
+go run ./cmd/riichi-eval --count 20 --jobs 8
+go run ./cmd/riichi-eval --count 20 --round-limit 1
+
+# 看产物
+cat .tmp-eval/report.md          # 人读表格；report.json 机器读；manifest.json 记 git sha / 配置 hash
+```
+
+预期（20 场口径的**历史记录摘录**，完整列见 `.tmp-eval/report.md`）：
+
+```
+座位   agent                       决策数                和了率                放铳率             平均顺位
+0      shanten:attack              2953  31.7% [25.7,37.8]   7.0% [3.7,10.2]  1.60 [1.27,1.93]
+1      defense:defense             2973  22.2% [16.8,27.5]  16.5% [11.7,21.3]  2.50 [2.04,2.96]
+2      search:closed               2963  24.3% [18.8,29.9]  14.8% [10.2,19.4]  2.15 [1.79,2.51]
+3      random                      2935   0.4% [0.0,1.3]    19.1% [14.0,24.2]  3.70 [3.45,3.95]
+ELO：1716.3 / 1588.8 / 1506.3 / 1188.6（Bradley-Terry，均值 1500）
+共 20 场 / 230 轮，失败 0 场
+```
+
+> 数字会随策略实现变化（当前 `--calls pass`、策略不输出立直，见「已知限制」）。以你自己跑出来的 `report.md` 为准。
+
+### 3）用 MCP 工具（stdio JSON-RPC）
+
+```bash
+cd riichi
+
+# 列工具：一行一条 JSON-RPC 消息（注意不能只写 tools/list，那不是合法 JSON-RPC）
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | go run ./cmd/riichi-mcp
+
+# 调用工具：向听
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mahjong.shanten","arguments":{"hand":["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","5p"]}}}' \
+  | go run ./cmd/riichi-mcp
+
+# 算点 / 役种潜力 / 危险度同理，换 name 与 arguments 即可
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mahjong.score","arguments":{"hand":["1m","2m","3m","4m","5m","6m","7m","8m","9m","1p","2p","3p","5p"],"winning":"5p","ctx":{"tsumo":true,"riichi":true,"menzen":true}}}}' \
+  | go run ./cmd/riichi-mcp
+```
+
+5 个工具：`mahjong.shanten`（向听）、`mahjong.ukeire`（有效进张）、`mahjong.safety`（危险度排序）、`mahjong.score`（役/翻/符/点）、`mahjong.yaku_potential`（听牌形可成立的役种）。
+把它接进 Claude Desktop / Cursor / 自研 Agent 时，MCP 客户端发 `initialize` → `notifications/initialized` → `tools/list` → `tools/call`。
+协议约束：参数错 `-32602`、内部错 `-32603`、解析失败 `-32700`；单条消息上限 1 MiB；纯标准库实现，无第三方依赖。
+
+### 4）开网页：最小牌桌
+
+```bash
+cd riichi
+
+# 终端 A：起服务（CORS 放行，方便 file:// 打开的页面直连）
+go run ./cmd/riichi-server -addr 127.0.0.1:8099 -jwt-secret dev -cors "*"
+
+# 终端 B：签座位 0 的令牌
+go run ./cmd/riichi-server -jwt-secret dev -issue-token 0
+
+# 浏览器打开 web/index.html（file:// 即可，纯静态、无构建）
+#   服务器 = http://127.0.0.1:8099   座位 = 0   JWT = 终端 B 的令牌
+#   点「新建对局」→ 自动建局 + 连接；点自己的手牌 = 打牌
+#   其余三家是 AI，会自动摸打；断线按钮可验证 resume 补齐
+```
+
+后端关了 CORS（`-cors ""`）时用同源反代兜底：
+
+```bash
+python web/serve.py --port 8098 --target http://127.0.0.1:8099
+# 浏览器打开 http://127.0.0.1:8098/（状态栏会显示「已连接（同源代理）」）
+```
+
+页面能力与手动验收步骤见 [`web/README.md`](../web/README.md)（含断线重连补发、刷新续上的逐条预期）。
 
 ## 设计要点
+
+**事件溯源**：`状态 = fold(events)`，每个事件带单调 `seq`，牌山由 seed 决定。回放、断线续传、评测复现由同一机制解决；`Replay(seed, actions)` 与实时状态逐字段一致有测试。
+
+**Observation 裁剪（防作弊）**：Agent 的唯一输入是 `game.Observe(seat)` 的结果，只含自己手牌 + 公开信息；别家手牌、牌山顺序、里宝牌指示牌**结构上不可见**，切片全部拷贝。契约要求「Observe 不泄漏」必须有测试。
+
+**响应窗口优先级**：打牌/加杠后进入 `await_response`，四家并发选择，结算顺序 `ron > pon/kan > chi > pass`；双响按 `Ruleset.DoubleRon`（关闭时头跳取最近一家），pon/kan 取离放铳者最近的一家，chi 只来自下家；超时按 pass，放弃荣和记同巡振听（立直者永久振听）。
 
 **为什么不用 `math/rand`**：牌谱复现要求「同 seed 在任何机器、任何 Go 版本上得到同一副牌」。标准库 `Shuffle` 的实现细节可能随版本变化，而 SplitMix64 只有加法与位运算，实现固定；洗牌用 Fisher-Yates + 拒绝采样取模，保证分布均匀。
 
@@ -75,7 +193,29 @@ curl -s -X POST localhost:8099/api/v1/games -H "Authorization: Bearer <token>" \
     └── 裏宝牌指示牌 5
 ```
 
-**编码**：`Kind` 0-33（万/筒/索 各 9 + 字牌 7），`Tile{Kind, Red}`；文本 `"5m"`、赤宝牌 `"r5m"`（兼容 `"0m"`），字牌 `"E"`/`"1z"` 两种写法都可解析。
+**Room actor**：一局一个 goroutine，所有改状态的操作（action / AI 结果 / resume / 响应超时）经 channel 串行执行，对局状态无锁；广播用带缓冲 channel，慢连接直接摘除，不阻塞对局。
+
+**真实算点**：`game.RulesScorer` 把副露转成 `rules.Meld` → `Decompose` → `Evaluate` → 宝牌/赤/里 → `Score`，门清/副露/七对/国士都走真实规则。
+
+**MCP 工具层**：`riichi-mcp` 只依赖纯函数层（rules/tile），无状态、无网络，可被任何 MCP 客户端接入；LLM Agent 则用同一批规则算 top-5 候选，只做重排与解释。
+
+**编码**：`Kind` 0-33（万/筒/索 各 9 + 字牌 7），`Tile{Kind, Aka}`；文本 `"5m"`、赤宝牌 `"r5m"`（兼容 `"0m"`），字牌 `"E"`/`"1z"` 两种写法都可解析。
+
+## 契约
+
+接口与事件/协议定义见 [`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md)（冻结 v1.3，改契约需 ADR）。
+依赖方向铁律：`transport → game → rules → tile`，只能向下；`agent` 只读 `game`，禁止回写状态。
+
+## 已知限制（诚实口径，别在面试里被拆穿）
+
+1. **立直率 ≈ 0**：S8 的策略只输出 `ActDiscard`，不选 `ActRiichi`；只有 `random` 会误打误撞立直（0.4%）。引擎侧立直/振听已实现，缺的是策略层动作选择。
+2. **真 LLM 未接真 key**：`NewFromEnv()` 没有 `LLM_API_KEY`/`OPENAI_API_KEY` 时自动用 `MockClient`（决策链路/解析/回退/统计照常跑）；只有配了 key 才走 OpenAI 兼容端点。
+3. **评测副露默认禁用**：`--calls pass`（只荣和）是默认；S5 的「鸣牌后打牌」流程未完全接通，`--calls agent` 让 agent 自由吃碰杠会产生 `aborted` 场次。
+4. **MySQL JSON 归一化**：JSON 列会 key 重排/去空白，回放按**语义**比较，不做字节级断言（契约 §5）。
+5. **`riichi` 暂无 CI 门禁**：仓库 `.github/workflows/ci.yml` 的 Go job 跑的是 `go-engine`（gofmt + vet + test）；`riichi` 目前靠本地 `go test ./... -cover` + `gofmt -l . && go vet ./...`。
+6. **事件全量广播**：事件（含别人摸牌）按全量广播，尚未按座位过滤；`agent_thought` 是广播消息、**不落库**，重连后看不到历史思考。
+7. **单进程内存房间**：`Manager` 在进程内存里管 room，重启丢房间（事件仍在 store 里）；多进程部署需要把 room 与会话外置。
+8. **样本量**：20 场 / 230 轮，比例指标 95% CI 约 ±5~6 个百分点，区分不了 24.3% 与 22.2%；要下更细结论需 ≥200 场。
 
 ## 开发
 
@@ -84,7 +224,8 @@ cd riichi
 gofmt -l .          # 应为空
 go vet ./...
 go test ./... -count=1 -cover
-go test ./internal/tile -run "^$" -bench . -benchmem
+go test ./internal/tile -run "^$" -bench . -benchmem     # 洗牌/建牌墙基准
+go test ./internal/agent -run "^$" -bench . -benchmem    # 三策略 Decide 基准
 ```
 
-Go 1.25+。
+Go 1.25+。评测输出目录（默认 `./eval-out`）不要提交，建议 `--out .tmp-eval` 或加进本地 exclude。
