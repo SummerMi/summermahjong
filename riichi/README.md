@@ -8,7 +8,7 @@
 ## 这是什么
 
 一个 **Go 单体服务**：真实规则引擎（41 役种 + 符 + 点数）+ 事件溯源对局服务（HTTP/WS、断线续传）+ 多策略 AI（13 个工厂名）+ 自对弈评测（指标 + ELO）+ MCP 规则工具层（5 个工具）+ 最小牌桌网页。
-实现 11,382 行 / 测试 12,087 行（105 个 `.go` 文件），`tile` 包覆盖率 100%。
+实现 11,382 行 / 测试 11,967 行（104 个 `.go` 文件），`tile` 包覆盖率 100%。
 
 ## 目录
 
@@ -23,7 +23,7 @@ internal/
   game/            状态机：摸打/副露/立直/振听/响应窗口/和了/流局/连庄（92.7%）
   agent/           13 个工厂名（random / shanten / defense / search × 打风）+ 超时回退（93.7%）
   agent/llm/       OpenAI 兼容 LLM Agent：top-k 候选重排 + 回退（93.2%）
-  eval/            自对弈驱动、指标、ELO、报告（90.0%）
+  eval/            自对弈驱动、指标、ELO、报告（89.6%）
   store/           Store 接口 + Memory / MySQL / Redis 三实现 + 共用契约测试
   transport/       HTTP/WS、seq 续传、JWT、Room actor、指标（77.9%）
 testdata/          金标牌谱与 fixture
@@ -38,7 +38,7 @@ testdata/          金标牌谱与 fixture
 | `internal/game` | 副露/立直/振听/**显式响应窗口**（ron>pon/kan>chi）/和了/流局/连庄；整局脚本 + 回放逐字段一致 | **92.7%** |
 | `internal/agent` | 四类策略（随机/向听/防守/搜索）× 三种打风 + 超时回退 + 工厂（**13 个名字**） | **93.7%** |
 | `internal/agent/llm` | top-k 候选重排 + 解析/合法性校验 + 回退 + 统计（无 key 自动 Mock） | 93.2% |
-| `internal/eval` | 自对弈驱动、和了/放铳/顺位/立直率、决策 P50/P95、95% CI、BT-ELO | 90.0% |
+| `internal/eval` | 自对弈驱动、和了/放铳/顺位/立直率、决策 P50/P95、95% CI、BT-ELO | 89.6% |
 | `internal/store` | Store 接口 + Memory（89.7%）/ Redis（85.6%）/ MySQL（需 `MYSQL_TEST_URL`）同一套契约测试 | 见左 |
 | `internal/transport` | HTTP/WS 事件流、`seq` 续传、JWT 座位、Room actor、响应窗口交互、指标 | **77.9%** |
 | `cmd/riichi-mcp` | 5 个规则工具（shanten / ukeire / safety / score / yaku_potential） | 88.3% |
@@ -107,6 +107,9 @@ go run ./cmd/riichi-eval --seeds 1-50 --agents shanten:attack,shanten:attack,def
 go run ./cmd/riichi-eval --count 20 --jobs 8
 go run ./cmd/riichi-eval --count 20 --round-limit 1
 
+# 报告口径：允许鸣牌（--calls agent，20 场里 1 场撞引擎边界记 aborted）
+go run ./cmd/riichi-eval --count 20 --calls agent --out .tmp-eval
+
 # 看产物
 cat .tmp-eval/report.md          # 人读表格；report.json 机器读；manifest.json 记 git sha / 配置 hash
 ```
@@ -115,15 +118,17 @@ cat .tmp-eval/report.md          # 人读表格；report.json 机器读；manife
 
 ```
 座位   agent                       决策数                和了率                放铳率             平均顺位
-0      shanten:attack              2953  31.7% [25.7,37.8]   7.0% [3.7,10.2]  1.60 [1.27,1.93]
-1      defense:defense             2973  22.2% [16.8,27.5]  16.5% [11.7,21.3]  2.50 [2.04,2.96]
-2      search:closed               2963  24.3% [18.8,29.9]  14.8% [10.2,19.4]  2.15 [1.79,2.51]
-3      random                      2935   0.4% [0.0,1.3]    19.1% [14.0,24.2]  3.70 [3.45,3.95]
-ELO：1716.3 / 1588.8 / 1506.3 / 1188.6（Bradley-Terry，均值 1500）
-共 20 场 / 230 轮，失败 0 场
+0      shanten:attack              3357  27.0% [21.0,32.9]  16.7% [11.8,21.7]  2.11 [1.68,2.53]
+1      defense:defense             3342  32.6% [26.3,38.8]   9.8% [5.8,13.7]   1.74 [1.44,2.03]
+2      search:closed               3381  28.8% [22.8,34.9]  16.3% [11.3,21.2]  2.37 [1.87,2.87]
+3      random                      3162   0.0% [0.0,0.0]    24.7% [18.9,30.4]  3.79 [3.60,3.98]
+ELO：1688.4 / 1605.8 / 1548.4 / 1157.4（Bradley-Terry，均值 1500）
+共 20 场 / 215 轮，失败 1 场（seed 7 aborted，不计入顺位/ELO）
+副露/杠事件 1735 次，93.2% 的和了来自副露手；总耗时 2.43s
 ```
 
-> 数字会随策略实现变化（当前 `--calls pass`、策略不输出立直，见「已知限制」）。以你自己跑出来的 `report.md` 为准。
+> 数字会随策略实现变化（策略不输出立直，见「已知限制」）。以你自己跑出来的 `report.md` 为准。
+> 上一版「禁鸣牌」口径（`--calls pass`）是 20 场 / 230 轮 / 0 副露、ELO 1716/1589/1506/1189，两版样本不可直接比较。
 
 ### 3）用 MCP 工具（stdio JSON-RPC）
 
@@ -208,14 +213,14 @@ python web/serve.py --port 8098 --target http://127.0.0.1:8099
 
 ## 已知限制（诚实口径，别在面试里被拆穿）
 
-1. **立直率 ≈ 0**：S8 的策略只输出 `ActDiscard`，不选 `ActRiichi`；只有 `random` 会误打误撞立直（0.4%）。引擎侧立直/振听已实现，缺的是策略层动作选择。
+1. **立直率 ≈ 0（实测四个座位都是 0.0%）**：S8 的策略只输出 `ActDiscard`，不选 `ActRiichi`，`random` 也一样。引擎侧立直/振听已实现，缺的是策略层动作选择。
 2. **真 LLM 未接真 key**：`NewFromEnv()` 没有 `LLM_API_KEY`/`OPENAI_API_KEY` 时自动用 `MockClient`（决策链路/解析/回退/统计照常跑）；只有配了 key 才走 OpenAI 兼容端点。
-3. **评测副露默认禁用**：`--calls pass`（只荣和）是默认；S5 的「鸣牌后打牌」流程未完全接通，`--calls agent` 让 agent 自由吃碰杠会产生 `aborted` 场次。
+3. **评测默认仍禁鸣牌**：CLI 默认 `--calls pass`（只荣和）；S5b 起「鸣牌后打牌」已接通，`--calls agent` 能真实跑副露博弈（最新报告就是这一口径：215 轮 / 1735 次副露）。但 **seed 7 仍会撞引擎边界**：座位 0 已有 4 组副露、手牌只剩 2 张，吃 5m 后食替禁则把两张手牌全禁掉 → `Legal()` 为空 → 该场 aborted。根因在 `internal/game` 的响应选项没有前瞻校验「副露后是否还剩合法打牌」。
 4. **MySQL JSON 归一化**：JSON 列会 key 重排/去空白，回放按**语义**比较，不做字节级断言（契约 §5）。
 5. **`riichi` 暂无 CI 门禁**：仓库 `.github/workflows/ci.yml` 的 Go job 跑的是 `go-engine`（gofmt + vet + test）；`riichi` 目前靠本地 `go test ./... -cover` + `gofmt -l . && go vet ./...`。
 6. **事件全量广播**：事件（含别人摸牌）按全量广播，尚未按座位过滤；`agent_thought` 是广播消息、**不落库**，重连后看不到历史思考。
 7. **单进程内存房间**：`Manager` 在进程内存里管 room，重启丢房间（事件仍在 store 里）；多进程部署需要把 room 与会话外置。
-8. **样本量**：20 场 / 230 轮，比例指标 95% CI 约 ±5~6 个百分点，区分不了 24.3% 与 22.2%；要下更细结论需 ≥200 场。
+8. **样本量**：20 场 / 215 轮，比例指标 95% CI 约 ±5~6 个百分点，区分不了 32.6% 与 28.8%；要下更细结论需 ≥200 场。
 
 ## 开发
 
