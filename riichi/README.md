@@ -30,14 +30,32 @@ internal/
 testdata/          金标牌谱与 fixture
 ```
 
-## 当前状态（M0）
+## 当前状态（S1–S3、S6、S7 完成）
 
-- [x] `internal/tile`：34 种牌 + 赤宝牌编码/解析、确定性洗牌（SplitMix64 + Fisher-Yates）、牌山切分（活牌 122 / 王牌 14）、发牌、摸牌、岭上、宝牌指示牌推进
-- [x] 单测覆盖 **100%**（含 SplitMix64 金标值、岭上/宝牌指示边界、非法输入）
-- [x] `internal/agent`：Agent 接口 + Random/FirstLegal 参考实现 + 合法性校验（覆盖 80%）
-- [x] `internal/store`：Store 接口 + Memory 实现 + 契约测试套件（覆盖 89.7%，sql/redis 复用同一套）
-- [x] `internal/game`：对局状态机骨架 + Observation 裁剪（含防泄露测试，覆盖 67.3%）
-- [ ] `internal/rules`（S3，进行中）/ `internal/eval` / `internal/transport`
+| 包 | 内容 | 覆盖 |
+|---|---|---|
+| `internal/tile` | 34 种牌 + 赤宝牌、确定性洗牌（SplitMix64 + Fisher-Yates）、牌山/王牌/岭上/宝牌指示 | **100%** |
+| `internal/rules` | 判胡拆解（标准型/七对/国士/待ち类型）、向听数；v1 金标回归 39/39 | **98.1%** |
+| `internal/game` | 对局状态机（摸打）+ Observation 裁剪（防泄露测试） | 67.3%（副露/立直在 S5） |
+| `internal/agent` | Agent 接口 + Random/FirstLegal + 合法性校验 | 80%（四策略在 S8） |
+| `internal/store` | Store 接口 + Memory 实现 + 契约套件；sql（MySQL）/redis 同一套契约测试 | memory 89.7% / sql 80.7%* / redis 85.6% |
+| `internal/transport` + `cmd/riichi-server` | HTTP/WS 事件流、seq 断线续传、JWT 座位、Room actor、200 并发建局 | **75.9%** |
+
+\* sql 需要 `MYSQL_TEST_URL`，未设置时 9 个用例 skip（默认零依赖）。
+
+## 跑起来
+
+`ash
+cd riichi
+go test ./... -count=1 -cover          # 全绿
+go run ./cmd/riichi-server -addr 127.0.0.1:8099 -jwt-secret dev -issue-token 0
+# 另开终端：
+curl -s -X POST localhost:8099/api/v1/games -H "Authorization: Bearer <token>" \
+  -d '{"seed":42,"agents":["human","random","random","random"]}'
+`
+
+- WS：`/api/v1/ws/games/{id}?seat=0&token=<token>`，连上后先发 `{"type":"resume","last_seq":0}` 拿历史事件。
+- 事件流、错误码、续传语义见 `docs/riichi-接口契约-20261110.md` §6/§7；实现说明见 `internal/transport/doc.go`。
 
 ## 契约
 接口与事件/协议定义见 [`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md)（冻结 v1，改契约需 ADR）。
