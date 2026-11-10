@@ -3,6 +3,9 @@
 > 一个用 **FastAPI（Python）+ Go 双实现**的广东麻将规则后端服务。
 > 目标不是做麻将游戏，而是用一件「有真实算法难度」的事情，把 **规则引擎 / 分层架构 / 三种存储 / 工程化 / 跨语言性能对比** 讲清楚。
 
+> **v2（进行中）：日麻**——本仓库另含 **单人天凤式日麻（1 真人 + 3 AI，Go 多智能体对局服务）**，代码在 [`riichi/`](riichi/)，一页索引见 [`docs/riichi-交付清单-20261110.md`](docs/riichi-交付清单-20261110.md)。
+> 本 README 描述的 v1（Python + Go 双实现 · 推倒胡）保留作为**对照实现与回归基线**，不再作为主线产品。
+
 ![Swagger UI](docs/images/swagger-full.png)
 
 **一句话数据**：Python 侧 **218 个测试全绿、覆盖率 93%**（另有 11 个 MySQL 门控集成用例）、**三种存储实现**（内存 / SQL / Redis）行为一致、**cache-aside 读缓存**（命中率可观测、缓存故障自动降级）、**JWT 鉴权 + 座位绑定**（默认关闭，开一个环境变量即生效）、**WebSocket 多人实时对局**（连接表 / 心跳 / 广播 / 断线清理）、**真实 MySQL 5.7.44 实测**并修掉两个只在 MySQL 暴露的缺陷、Go 侧 **15 个测试函数 + 2000 手随机牌逐条对拍**、判胡 Go 比 Python 快 **45×–100×**（0 allocs/op）、单 worker HTTP **约 2500 RPS / 低负载 p99 5.6ms**（本机 loopback，非生产）、Docker 非 root + CI 三路（Python / MySQL / Go）全绿。
@@ -424,7 +427,7 @@ docker compose up --build
 | [docs/W1每日任务表-20261102.md](docs/W1每日任务表-20261102.md) | 第一周 7 天逐日任务（题号 + 八股 + 项目 + 复盘） |
 | [docs/目标公司投递清单-20261102.md](docs/目标公司投递清单-20261102.md) | P0/P1/P2 分层、入口、语言栈、投递节奏 |
 | [docs/简历与面试话术.md](docs/简历与面试话术.md) | 简历项目条目、23 题面试 Q&A、9 步演示脚本、诚实边界 |
-| [docs/简历-成品-20261102.md](docs/简历-成品-20261102.md) · [docx](docs/简历-成品-20261102.docx) · [pdf](docs/简历-成品-20261102.pdf) | **一页简历成品（投递版）**：RuoYi-AI 平台 + 个人产品（eyjamini/eyami）+ 麻将 + IEEE；改完跑 `bash scripts/build_resume_pdf.sh` |
+| [docs/简历-成品-20261102.md](docs/简历-成品-20261102.md) · [docx](docs/简历-成品-20261102.docx) · [pdf](docs/简历-成品-20261102.pdf) | **一页简历成品（投递版）**：RuoYi-AI 平台 + 日麻 v2（Go 多智能体）+ 个人产品（eyjamini/eyami）+ IEEE；改完跑 `bash scripts/build_resume_pdf.sh` |
 | [docs/简历-魔方简历版-20261103.pdf](docs/简历-魔方简历版-20261103.pdf) · [预览](docs/简历-魔方简历版预览-20261103.png) · [JSON 备份](docs/简历-魔方简历备份-20261103.json) | 魔方简历（magicv.art）里那份的导出：同样内容、另一种版式，可在自己浏览器「导入简历」继续改 |
 | [docs/RuoYiAI-讲清楚手册-20261103.md](docs/RuoYiAI-讲清楚手册-20261103.md) | **把 RuoYi-AI 讲清楚**：四层架构图、三条链路（流式/工具层/模型切换）、五个真实踩坑、名词小抄、白板 5 步、十问快答、90 秒与 3 分钟逐字稿 |
 | [docs/项目包装-RuoYiAI-20261103.md](docs/项目包装-RuoYiAI-20261103.md) | **RuoYi-AI 项目包装方案**：代码事实清单、简历 bullet（4 条/3 条）、60 秒讲法、10 问追问预案、诚实边界、如何桥接 Go+Agent 岗 |
