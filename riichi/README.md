@@ -35,9 +35,9 @@ testdata/          金标牌谱与 fixture
 | 包 | 内容 | 覆盖 |
 |---|---|---|
 | `internal/tile` | 34 种牌 + 赤宝牌、确定性洗牌（SplitMix64 + Fisher-Yates）、牌山/王牌/岭上/宝牌指示 | **100%** |
-| `internal/rules` | 判胡拆解（标准型/七对/国士/待ち类型）、向听数；v1 金标回归 39/39 | **98.1%** |
-| `internal/game` | 对局状态机（摸打）+ Observation 裁剪（防泄露测试） | 67.3%（副露/立直在 S5） |
-| `internal/agent` | Agent 接口 + Random/FirstLegal + 合法性校验 | 80%（四策略在 S8） |
+| `internal/rules` | 判胡拆解 + 向听 + **41 役种/符/点数**（29 手金标）；v1 金标回归 39/39 | **94.5%** |
+| `internal/game` | 对局流程：副露/立直/振听/响应窗口/和了/流局/连庄（71 用例，整局脚本+回放一致） | **92.2%** |
+| `internal/agent` | 四类策略（随机/向听/防守/搜索）× 三种打风 + 超时回退 + 工厂（13 个名字） | **93.7%** |
 | `internal/store` | Store 接口 + Memory 实现 + 契约套件；sql（MySQL）/redis 同一套契约测试 | memory 89.7% / sql 80.7%* / redis 85.6% |
 | `internal/transport` + `cmd/riichi-server` | HTTP/WS 事件流、seq 断线续传、JWT 座位、Room actor、200 并发建局 | **75.9%** |
 
