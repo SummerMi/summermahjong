@@ -29,7 +29,7 @@ internal/
 testdata/          金标牌谱与 fixture
 ```
 
-## 当前状态（S1–S11 完成，2026-11-10 收口）
+## 当前状态（S1–S12 完成，2026-11-10 收口）
 
 | 包 | 内容 | 覆盖 |
 |---|---|---|
@@ -107,7 +107,7 @@ go run ./cmd/riichi-eval --seeds 1-50 --agents shanten:attack,shanten:attack,def
 go run ./cmd/riichi-eval --count 20 --jobs 8
 go run ./cmd/riichi-eval --count 20 --round-limit 1
 
-# 报告口径：允许鸣牌（--calls agent，20 场里 1 场撞引擎边界记 aborted）
+# 报告口径：允许鸣牌（--calls agent；seed 7 死状态已修 d61a7fb，重跑应 aborted=0）
 go run ./cmd/riichi-eval --count 20 --calls agent --out .tmp-eval
 
 # 看产物
@@ -123,7 +123,7 @@ cat .tmp-eval/report.md          # 人读表格；report.json 机器读；manife
 2      search:closed               3381  28.8% [22.8,34.9]  16.3% [11.3,21.2]  2.37 [1.87,2.87]
 3      random                      3162   0.0% [0.0,0.0]    24.7% [18.9,30.4]  3.79 [3.60,3.98]
 ELO：1688.4 / 1605.8 / 1548.4 / 1157.4（Bradley-Terry，均值 1500）
-共 20 场 / 215 轮，失败 1 场（seed 7 aborted，不计入顺位/ELO）
+共 20 场 / 215 轮（此表是 seed 7 修复前那一轮；d61a7fb 修复后重跑 aborted=0 / errors=0 / 副露 1757 / 和了 192，完整指标以评测报告最新版为准）
 副露/杠事件 1735 次，93.2% 的和了来自副露手；总耗时 2.43s
 ```
 
@@ -215,12 +215,12 @@ python web/serve.py --port 8098 --target http://127.0.0.1:8099
 
 1. **立直率 ≈ 0（实测四个座位都是 0.0%）**：S8 的策略只输出 `ActDiscard`，不选 `ActRiichi`，`random` 也一样。引擎侧立直/振听已实现，缺的是策略层动作选择。
 2. **真 LLM 未接真 key**：`NewFromEnv()` 没有 `LLM_API_KEY`/`OPENAI_API_KEY` 时自动用 `MockClient`（决策链路/解析/回退/统计照常跑）；只有配了 key 才走 OpenAI 兼容端点。
-3. **评测默认仍禁鸣牌**：CLI 默认 `--calls pass`（只荣和）；S5b 起「鸣牌后打牌」已接通，`--calls agent` 能真实跑副露博弈（最新报告就是这一口径：215 轮 / 1735 次副露）。但 **seed 7 仍会撞引擎边界**：座位 0 已有 4 组副露、手牌只剩 2 张，吃 5m 后食替禁则把两张手牌全禁掉 → `Legal()` 为空 → 该场 aborted。根因在 `internal/game` 的响应选项没有前瞻校验「副露后是否还剩合法打牌」。
+3. **评测默认仍禁鸣牌，但副露已能真跑**：CLI 默认 `--calls pass`（只荣和）；S5b 起「鸣牌后打牌」已接通，`--calls agent` 可真实跑副露博弈（最新报告口径：215 轮 / 1735 次副露）。**seed 7 的死状态已修**（`d61a7fb`）：此前座位 0 有 4 组副露、手牌只剩 2 张，吃 5m 后食替禁则把两张手牌全禁掉 → `Legal()` 为空 → 该场 aborted；修法是开窗前先前瞻校验「这次副露后是否还有合法打牌」，禁满就不给该吃选项，并补了 `call_guard_test.go`。修复后重跑 20 场：aborted=0 / errors=0 / 副露 1757 / 和了 192。
 4. **MySQL JSON 归一化**：JSON 列会 key 重排/去空白，回放按**语义**比较，不做字节级断言（契约 §5）。
-5. **`riichi` 暂无 CI 门禁**：仓库 `.github/workflows/ci.yml` 的 Go job 跑的是 `go-engine`（gofmt + vet + test）；`riichi` 目前靠本地 `go test ./... -cover` + `gofmt -l . && go vet ./...`。
+5. **CI 覆盖来得晚**：`riichi` 已接入 CI——`.github/workflows/ci.yml` 的 `riichi-test` job 跑 `gofmt` + `go vet` + `go test ./... -race`，并挂 MySQL 5.7 service 真跑存储契约；但这是 S12 才补的，早期只有本地门禁。
 6. **事件全量广播**：事件（含别人摸牌）按全量广播，尚未按座位过滤；`agent_thought` 是广播消息、**不落库**，重连后看不到历史思考。
 7. **单进程内存房间**：`Manager` 在进程内存里管 room，重启丢房间（事件仍在 store 里）；多进程部署需要把 room 与会话外置。
-8. **样本量**：20 场 / 215 轮，比例指标 95% CI 约 ±5~6 个百分点，区分不了 32.6% 与 28.8%；要下更细结论需 ≥200 场。
+8. **样本量**：20 场 / 215 轮（seed 7 修复后重跑为 218 轮），比例指标 95% CI 约 ±5~6 个百分点，区分不了上表 32.6% 与 28.8% 那点差距；要下更细结论需 ≥200 场。
 
 ## 开发
 
