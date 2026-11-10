@@ -120,8 +120,8 @@ def build(md_path: Path, out_path: Path) -> None:
 
     doc = Document()
     section = doc.sections[0]
-    section.top_margin = Cm(0.75)
-    section.bottom_margin = Cm(0.75)
+    section.top_margin = Cm(0.65)
+    section.bottom_margin = Cm(0.65)
     section.left_margin = Cm(1.3)
     section.right_margin = Cm(1.3)
 
@@ -146,7 +146,7 @@ def build(md_path: Path, out_path: Path) -> None:
             _set_cn_font(p.add_run(text.replace("**", "")), size=9)
         elif kind == "h2":
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_before = Pt(3)
             p.paragraph_format.space_after = Pt(2)
             _set_cn_font(p.add_run(text), size=10.8, bold=True)
             # 小节标题下加一条细横线（用下边框实现）
@@ -159,18 +159,18 @@ def build(md_path: Path, out_path: Path) -> None:
             pPr.append(borders)
         elif kind == "h3":
             p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_before = Pt(3)
             p.paragraph_format.space_after = Pt(1)
-            _add_rich_text(p, text, size=9.3, base_bold=True)
+            _add_rich_text(p, text, size=9.0, base_bold=True)
         elif kind == "bullet":
             p = doc.add_paragraph(style="List Bullet")
             p.paragraph_format.space_after = Pt(1)
             p.paragraph_format.line_spacing = 1.0
-            _add_rich_text(p, text, size=8.8)
+            _add_rich_text(p, text, size=8.5)
         else:
             p = doc.add_paragraph()
             p.paragraph_format.space_after = Pt(1)
-            _add_rich_text(p, text, size=8.8)
+            _add_rich_text(p, text, size=8.5)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out_path))
