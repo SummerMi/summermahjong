@@ -46,8 +46,10 @@ type ManagerConfig struct {
 	AutoPassResponses bool
 	// ResponseTimeout 是人类响应窗口超时（超时按 pass 处理，0 表示默认 5s）。
 	ResponseTimeout time.Duration
-	Logger          *slog.Logger
-	Metrics         *metrics
+	// AutoAdvanceRounds 控制本局结束后是否自动开下一局；nil = 默认开启。
+	AutoAdvanceRounds *bool
+	Logger            *slog.Logger
+	Metrics           *metrics
 }
 
 // Manager 管理所有对局房间（单进程内存）。
@@ -123,14 +125,15 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Room, error) {
 	}
 
 	roomCfg := roomConfig{
-		store:           m.store,
-		agents:          agents,
-		agentNames:      names,
-		agentTimeout:    m.cfg.AgentTimeout,
-		manualResponses: !m.cfg.AutoPassResponses,
-		responseTimeout: m.cfg.ResponseTimeout,
-		logger:          m.logger,
-		metrics:         m.metrics,
+		store:             m.store,
+		agents:            agents,
+		agentNames:        names,
+		agentTimeout:      m.cfg.AgentTimeout,
+		manualResponses:   !m.cfg.AutoPassResponses,
+		responseTimeout:   m.cfg.ResponseTimeout,
+		autoAdvanceRounds: m.cfg.AutoAdvanceRounds == nil || *m.cfg.AutoAdvanceRounds,
+		logger:            m.logger,
+		metrics:           m.metrics,
 	}
 	room := newRoom(id, st, meta, roomCfg)
 	if err := room.persistInitial(ctx); err != nil {

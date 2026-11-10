@@ -140,8 +140,11 @@ type roomConfig struct {
 	manualResponses bool
 	// responseTimeout 是人类响应窗口超时（超时按 pass 结算）。
 	responseTimeout time.Duration
-	logger          *slog.Logger
-	metrics         *metrics // 可为 nil（单测直接建房间时）
+	// autoAdvanceRounds=true 时，本局结束（round_end）后自动 StartNextRound，
+	// 直到南 4 结束/トビ終了（game_end）；false 则停在 round_end（单局调试）。
+	autoAdvanceRounds bool
+	logger            *slog.Logger
+	metrics           *metrics // 可为 nil（单测直接建房间时）
 }
 
 // Room 是一局对局的 actor：单 goroutine 串行执行「Apply → 落库 → 广播 → AI 驱动」。
@@ -308,8 +311,14 @@ func (r *Room) drive() {
 		case game.PhaseAwaitDraw:
 			// 摸牌没有选择余地：由服务端自动执行（人类/AI 一致），事件照常广播
 			if err := r.applyAction(game.Action{Kind: game.ActDraw, Seat: r.st.Turn}); err != nil {
-				if r.st.Phase == game.PhaseRoundEnd || r.st.Phase == game.PhaseGameEnd {
-					// 荒牌流局等合法终局：事件已在 applyAction 里落库/广播，正常停住
+				if r.st.Phase == game.PhaseRoundEnd {
+					// 荒牌流局：事件已在 applyAction 里落库/广播；按开关继续开下一局
+					if !r.advanceRound() {
+						return
+					}
+					continue
+				}
+				if r.st.Phase == game.PhaseGameEnd {
 					return
 				}
 				r.cfg.logger.Info("对局停止推进",
@@ -331,10 +340,35 @@ func (r *Room) drive() {
 			// 响应窗口：把选项推给人类座位 / 启动 AI 决策 / 启动超时定时器，然后等消息
 			r.startResponseWindow()
 			return
+		case game.PhaseRoundEnd:
+			// 自动开下一局（Config.AutoAdvanceRounds，默认 true）：整场连打。
+			if !r.advanceRound() {
+				return
+			}
+			continue // 新一局回到 await_draw，继续自动摸牌
 		default:
 			return
 		}
 	}
+}
+
+// advanceRound 在 round_end 后自动开下一局，并把新事件落库/广播。
+//
+// 返回 true 表示已进入下一局（调用方继续驱动）；false 表示终局（game_end）或
+// 该房间关闭了自动推进（单局调试）。
+func (r *Room) advanceRound() bool {
+	if !r.cfg.autoAdvanceRounds {
+		return false
+	}
+	seqBefore := r.st.Seq
+	if err := r.st.StartNextRound(); err != nil {
+		r.cfg.logger.Error("自动开下一局失败",
+			"game_id", r.id, "seq", r.st.Seq, "err", err)
+		return false
+	}
+	// round_end 已经在上一手广播过；这里广播新一局的 round_start（或终局 game_end）
+	r.afterApply(seqBefore, false)
+	return r.st.Phase != game.PhaseGameEnd
 }
 
 // launchAI 在独立 goroutine 里跑 Agent，带 deadline；超时/异常回退到首个合法动作。

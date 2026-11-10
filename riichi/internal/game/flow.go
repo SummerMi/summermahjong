@@ -879,6 +879,21 @@ func (s *State) emitRoundEnd(dealerRepeat bool) {
 	})
 }
 
+// ranksOf 计算四家顺位（1 最好；同分并列，1 + 高于自己的座位数）。
+func ranksOf(scores [4]int) [4]int {
+	var ranks [4]int
+	for seat := 0; seat < 4; seat++ {
+		rank := 1
+		for other := 0; other < 4; other++ {
+			if other != seat && scores[other] > scores[seat] {
+				rank++
+			}
+		}
+		ranks[seat] = rank
+	}
+	return ranks
+}
+
 // StartNextRound 进入下一局；南 4 结束或有人点数 <0（トビ終了）时进终局。
 func (s *State) StartNextRound() error {
 	if s.Phase != PhaseRoundEnd {
@@ -888,6 +903,10 @@ func (s *State) StartNextRound() error {
 		s.Phase = PhaseGameEnd
 		s.emitPayload(EventGameEnd, s.Dealer, nil, map[string]any{
 			"final_scores": s.Scores,
+			"ranks":        ranksOf(s.Scores),
+			"round_wind":   int(s.RoundWind),
+			"kyoku":        s.Kyoku,
+			"honba":        s.Honba,
 		})
 		return nil
 	}

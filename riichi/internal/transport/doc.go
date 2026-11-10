@@ -42,6 +42,14 @@
 //     "chosen":"5m","candidates":[...]}（前端渲染思考过程）；
 //   - 兼容模式 Config.AutoPassResponses=true 时所有响应自动 pass（S6 旧行为）。
 //
+// 整场连打（task-14-fix3）：
+//
+//   - 房间默认 Config.AutoAdvanceRounds 开启（nil = true）：本局 round_end 后自动
+//     StartNextRound 并广播新一局 round_start，直到南 4 结束/トビ終了；
+//   - 终局时广播 game_end，payload 含 final_scores / ranks（1 最好）/ round_wind /
+//     kyoku / honba，随后房间停止推进；
+//   - 显式 Config.AutoAdvanceRounds=false 时停在 round_end（单局调试，旧测试用）。
+//
 // 断线续传语义（契约 §6.2）：
 //
 //   - 连接建立后**不**自动回放历史事件；客户端发 resume(last_seq) 触发补齐，

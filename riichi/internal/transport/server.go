@@ -38,6 +38,9 @@ type Config struct {
 	AutoPassResponses bool
 	// ResponseTimeout 是人类响应窗口超时，0 表示默认 5s（超时按 pass 结算）。
 	ResponseTimeout time.Duration
+	// AutoAdvanceRounds 控制本局结束后是否自动开下一局（整场连打）。
+	// nil = 默认开启（demo/生产连打）；显式 false = 停在 round_end（单局调试/旧测试）。
+	AutoAdvanceRounds *bool
 	// Store 是事件存储，nil 表示使用内存实现（测试 / 单机 demo）。
 	Store store.Store
 	// Logger 是结构化日志，nil 表示 slog.Default()。
@@ -74,6 +77,7 @@ func New(cfg Config) (*Server, error) {
 		AgentTimeout:      cfg.AgentTimeout,
 		AutoPassResponses: cfg.AutoPassResponses,
 		ResponseTimeout:   cfg.ResponseTimeout,
+		AutoAdvanceRounds: cfg.AutoAdvanceRounds,
 		Logger:            cfg.Logger,
 		Metrics:           m,
 	})

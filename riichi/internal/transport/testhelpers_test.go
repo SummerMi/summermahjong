@@ -20,6 +20,9 @@ import (
 
 const testSecret = "test-secret-0123456789abcdef"
 
+// boolPtr 返回 bool 指针（Config 里「默认 true」的开关用 nil 表示默认）。
+func boolPtr(v bool) *bool { return &v }
+
 // newTestServer 起一个进程内服务（httptest）。
 //
 // AutoPassResponses=true 保持 S6 的兼容语义（响应窗口自动 pass），旧测试因此不受
@@ -30,6 +33,8 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		JWTSecret:         []byte(testSecret),
 		AgentTimeout:      200 * time.Millisecond,
 		AutoPassResponses: true,
+		// 旧单局测试显式关闭自动开下一局，保持「打一局就停」的语义
+		AutoAdvanceRounds: boolPtr(false),
 	})
 }
 
@@ -54,13 +59,26 @@ func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, *httptest.Serve
 	return srv, ts
 }
 
+// newAutoAdvanceTestServer 起一个「整场连打」服务：round_end 后自动开下一局，
+// 且响应窗口交给 AI 决策（会有副露/荣和，点数会变化，端到端证据更有意义）。
+func newAutoAdvanceTestServer(t *testing.T) (*Server, *httptest.Server) {
+	t.Helper()
+	return newTestServerWithConfig(t, Config{
+		JWTSecret:         []byte(testSecret),
+		AgentTimeout:      200 * time.Millisecond,
+		AutoPassResponses: false,
+		AutoAdvanceRounds: boolPtr(true),
+	})
+}
+
 // newResponseTestServer 起一个「真打模式」服务：响应窗口需要显式响应/超时。
 func newResponseTestServer(t *testing.T, responseTimeout time.Duration) (*Server, *httptest.Server) {
 	t.Helper()
 	return newTestServerWithConfig(t, Config{
-		JWTSecret:       []byte(testSecret),
-		AgentTimeout:    200 * time.Millisecond,
-		ResponseTimeout: responseTimeout,
+		JWTSecret:         []byte(testSecret),
+		AgentTimeout:      200 * time.Millisecond,
+		ResponseTimeout:   responseTimeout,
+		AutoAdvanceRounds: boolPtr(false),
 	})
 }
 
