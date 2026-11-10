@@ -37,6 +37,9 @@ type Config struct {
 	Store store.Store
 	// Logger 是结构化日志，nil 表示 slog.Default()。
 	Logger *slog.Logger
+
+	// CORSOrigin 是允许的跨域来源；空串表示不启用（demo 传 "*"，生产传白名单域名）。
+	CORSOrigin string
 }
 
 // Server 是对局服务：HTTP + WebSocket。
@@ -92,7 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ws/games/{id}", s.handleWS)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	return s.recoverPanics(mux)
+	return withCORS(s.recoverPanics(mux), s.cfg.CORSOrigin)
 }
 
 // Close 关闭所有房间（进程退出时调用）。

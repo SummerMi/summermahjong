@@ -36,6 +36,7 @@ func main() {
 	agentTimeout := flag.Duration("agent-timeout", 500*time.Millisecond, "AI 单次决策上限（契约默认 500ms）")
 	issueToken := flag.Int("issue-token", -1, "只签发指定座位的 JWT（0-3）并退出")
 	tokenTTL := flag.Duration("token-ttl", 2*time.Hour, "签发令牌的有效期")
+	corsOrigin := flag.String("cors", "*", "CORS 允许来源（demo 默认 *；空串关闭）")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -53,6 +54,7 @@ func main() {
 		JWTSecret:    []byte(*secret),
 		AgentTimeout: *agentTimeout,
 		Logger:       logger,
+		CORSOrigin:   *corsOrigin,
 	})
 	if err != nil {
 		logger.Error("初始化服务失败", "err", err)
@@ -65,7 +67,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
-		logger.Info("riichi-server 启动", "addr", *addr, "agent_timeout", *agentTimeout)
+		logger.Info("riichi-server 启动", "addr", *addr, "agent_timeout", *agentTimeout, "cors", *corsOrigin)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("服务异常退出", "err", err)
 			os.Exit(1)
