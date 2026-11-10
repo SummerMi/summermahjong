@@ -328,7 +328,16 @@ func handleSafety(_ context.Context, args json.RawMessage) (any, error) {
 type scoreArgs struct {
 	Hand    []string      `json:"hand"`
 	Winning string        `json:"winning"`
+	Melds   []meldArgs    `json:"melds"`
 	Ctx     *scoreCtxArgs `json:"ctx"`
+}
+
+// meldArgs 是副露参数：kind 取 chi/pon/kan_daiminkan/kan_shouminkan/kan_ankan。
+//
+// 明暗由 kind 决定（暗杠 kan_ankan 不破坏门清），不需要调用方额外传 open。
+type meldArgs struct {
+	Kind  string   `json:"kind"`
+	Tiles []string `json:"tiles"`
 }
 
 type scoreCtxArgs struct {
@@ -364,34 +373,53 @@ type pointsOut struct {
 }
 
 type scoreResult struct {
-	Hand     []string  `json:"hand"`
-	Winning  string    `json:"winning"`
-	Pattern  string    `json:"pattern"`
-	Wait     string    `json:"wait"`
-	Jantou   string    `json:"jantou"`
-	Yaku     []yakuOut `json:"yaku"`
-	Han      int       `json:"han"`
-	Fu       int       `json:"fu"`
-	Dora     int       `json:"dora"`
-	TotalHan int       `json:"total_han"`
-	HasYaku  bool      `json:"has_yaku"`
-	Points   pointsOut `json:"points"`
+	Hand      []string  `json:"hand"`
+	Winning   string    `json:"winning"`
+	MeldCount int       `json:"meld_count"`
+	Pattern   string    `json:"pattern"`
+	Wait      string    `json:"wait"`
+	Jantou    string    `json:"jantou"`
+	Yaku      []yakuOut `json:"yaku"`
+	Han       int       `json:"han"`
+	Fu        int       `json:"fu"`
+	Dora      int       `json:"dora"`
+	TotalHan  int       `json:"total_han"`
+	HasYaku   bool      `json:"has_yaku"`
+	Points    pointsOut `json:"points"`
 }
 
 func scoreTool() tool {
 	return tool{
 		Name: "mahjong.score",
-		Description: "判定和牌并计算役种 / 翻 / 符 / 点数（门清；hand 传 13 张听牌形时自动补上 winning，" +
-			"传 14 张时 winning 须已在其中）。宝牌按 ctx.dora_indicators 与赤 5 自动统计。",
+		Description: "判定和牌并计算役种 / 翻 / 符 / 点数（门清或副露）。hand 只含暗牌：13-3*meldCount 张" +
+			"（不含 winning，自动补上）或 14-3*meldCount 张（含 winning）。副露通过 melds 传 " +
+			"kind=chi/pon/kan_* + tiles；宝牌按 ctx.dora_indicators 与赤 5 自动统计。",
 		InputSchema: schemaObject(map[string]any{
-			"hand":    schemaStringArray("手牌：13 张（不含 winning）或 14 张（含 winning）"),
+			"hand":    schemaStringArray("暗牌：13-3*meldCount 张（不含 winning）或 14-3*meldCount 张（含 winning）"),
 			"winning": map[string]any{"type": "string", "description": "和了牌，如 \"4p\" / \"r5m\""},
+			"melds": map[string]any{
+				"type":        "array",
+				"maxItems":    4,
+				"description": "已副露的面子（可省略 = 门清）",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"kind": map[string]any{
+							"type": "string",
+							"enum": []string{"chi", "pon", "kan_daiminkan", "kan_shouminkan", "kan_ankan"},
+						},
+						"tiles": schemaStringArray("该副露的牌：chi/pon 3 张，杠 4 张"),
+					},
+					"required": []string{"kind", "tiles"},
+				},
+			},
 			"ctx": map[string]any{
 				"type":                 "object",
-				"description":          "和了场况（可省略，默认门清荣和）",
+				"description":          "和了场况（可省略；menzen 默认按副露自动推导）",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"menzen":          map[string]any{"type": "boolean", "description": "必须为 true（当前 rules 只支持门清）"},
+					"menzen":          map[string]any{"type": "boolean", "description": "门清；省略时按 melds 自动推导，显式传错会被拒绝"},
 					"riichi":          map[string]any{"type": "boolean"},
 					"ippatsu":         map[string]any{"type": "boolean"},
 					"tsumo":           map[string]any{"type": "boolean"},
@@ -399,7 +427,7 @@ func scoreTool() tool {
 					"chankan":         map[string]any{"type": "boolean"},
 					"haitei":          map[string]any{"type": "boolean"},
 					"houtei":          map[string]any{"type": "boolean"},
-					"seat_wind":       map[string]any{"type": "string", "description": "自风：E/S/W/N，默认 E"},
+					"seat_wind":       map[string]any{"type": "string", "description": "自风：E/S/W/N，默认 E（亲家）"},
 					"round_wind":      map[string]any{"type": "string", "description": "场风：E/S/W/N，默认 E"},
 					"honba":           map[string]any{"type": "integer", "minimum": 0},
 					"riichi_sticks":   map[string]any{"type": "integer", "minimum": 0},
@@ -424,32 +452,52 @@ func handleScore(_ context.Context, args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, invalidParams("winning=%q 不是合法牌面", in.Winning)
 	}
-
-	var all []tile.Tile
-	switch len(hand) {
-	case 13:
-		all = append(append(all, hand...), winning)
-	case 14:
-		if !containsKind(hand, winning.Kind) {
-			return nil, invalidParams("hand 为 14 张时 winning 必须已经在 hand 里")
-		}
-		all = append(all, hand...)
-	default:
-		return nil, invalidParams("hand 必须是 13 张（不含 winning）或 14 张（含 winning），当前 %d 张", len(hand))
+	calledMelds, err := parseMeldsArg(in.Melds)
+	if err != nil {
+		return nil, err
 	}
-	if err := validateTileCounts(all); err != nil {
+	meldCount := len(calledMelds)
+
+	// hand 只含暗牌：不含 winning 时是 13-3*meldCount 张，含 winning 时是 14-3*meldCount 张。
+	withoutWinning := 13 - 3*meldCount
+	var concealed []tile.Tile
+	switch len(hand) {
+	case withoutWinning:
+		concealed = append(concealed, hand...)
+		concealed = append(concealed, winning)
+	case withoutWinning + 1:
+		if !containsKind(hand, winning.Kind) {
+			return nil, invalidParams("含 winning 的 hand 里必须出现 winning=%q", in.Winning)
+		}
+		concealed = append(concealed, hand...)
+	default:
+		return nil, invalidParams(
+			"hand 张数应为 %d（不含 winning）或 %d（含 winning），当前 %d 张（meldCount=%d）",
+			withoutWinning, withoutWinning+1, len(hand), meldCount,
+		)
+	}
+	if err := validateTileCounts(concealed); err != nil {
 		return nil, err
 	}
 
-	shape, ok := rules.Decompose(all, nil, winning)
+	shape, ok := rules.Decompose(concealed, calledMelds, winning)
 	if !ok {
-		return nil, invalidParams("不是和牌形（或牌面非法 / 未包含 winning）")
+		return nil, invalidParams("不是和牌形（或副露 / 牌面非法 / 未包含 winning）")
 	}
 
-	ctx := rules.ScoreContext{Menzen: true, SeatWind: tile.East, RoundWind: tile.East}
+	// 门清 = 没有明面副露（暗杠不破坏门清）；调用方显式传 menzen 时以显式值为准，
+	// 但与实际副露矛盾时 Evaluate 会返回 ErrInvalidContext（下面转成参数错误）。
+	menzen := true
+	for _, meld := range calledMelds {
+		if meld.Kind != rules.MeldKanAnkan {
+			menzen = false
+			break
+		}
+	}
+	ctx := rules.ScoreContext{Menzen: menzen, SeatWind: tile.East, RoundWind: tile.East}
 	if in.Ctx != nil {
-		if in.Ctx.Menzen != nil && !*in.Ctx.Menzen {
-			return nil, invalidParams("当前 rules.Decompose 只支持门清，menzen 必须为 true")
+		if in.Ctx.Menzen != nil {
+			ctx.Menzen = *in.Ctx.Menzen
 		}
 		ctx.Riichi = in.Ctx.Riichi
 		ctx.Ippatsu = in.Ctx.Ippatsu
@@ -492,22 +540,43 @@ func handleScore(_ context.Context, args json.RawMessage) (any, error) {
 		yakuOuts = append(yakuOuts, yakuOut{Name: y.Name, Han: y.Han, Yakuman: y.Yakuman})
 	}
 	return scoreResult{
-		Hand:     tilesToStrings(hand),
-		Winning:  winning.String(),
-		Pattern:  shape.Pattern,
-		Wait:     string(shape.Wait),
-		Jantou:   shape.Jantou.String(),
-		Yaku:     yakuOuts,
-		Han:      han,
-		Fu:       fu,
-		Dora:     dora,
-		TotalHan: han + dora,
-		HasYaku:  len(yaku) > 0,
+		Hand:      tilesToStrings(hand),
+		Winning:   winning.String(),
+		MeldCount: meldCount,
+		Pattern:   shape.Pattern,
+		Wait:      string(shape.Wait),
+		Jantou:    shape.Jantou.String(),
+		Yaku:      yakuOuts,
+		Han:       han,
+		Fu:        fu,
+		Dora:      dora,
+		TotalHan:  han + dora,
+		HasYaku:   len(yaku) > 0,
 		Points: pointsOut{
 			Han: points.Han, Fu: points.Fu, Base: points.Base, Ron: points.Ron,
 			TsumoChild: points.TsumoChild, TsumoDealer: points.TsumoDealer, Total: points.Total,
 		},
 	}, nil
+}
+
+// parseMeldsArg 解析并校验 score 工具的副露参数。
+func parseMeldsArg(raw []meldArgs) ([]rules.Meld, error) {
+	out := make([]rules.Meld, 0, len(raw))
+	for i, meld := range raw {
+		kind := strings.ToLower(strings.TrimSpace(meld.Kind))
+		switch kind {
+		case rules.MeldChi, rules.MeldPon, rules.MeldKanDaiminkan, rules.MeldKanShouminkan, rules.MeldKanAnkan:
+			// 合法副露种类
+		default:
+			return nil, invalidParams("melds[%d].kind=%q 非法（chi/pon/kan_daiminkan/kan_shouminkan/kan_ankan）", i, meld.Kind)
+		}
+		tiles, err := parseHandArg(meld.Tiles, fmt.Sprintf("melds[%d].tiles", i))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rules.Meld{Kind: kind, Tiles: tiles})
+	}
+	return out, nil
 }
 
 // ── mahjong.yaku_potential ───────────────────────────────────────────────

@@ -391,6 +391,28 @@ func TestScoreToolWith14TileHand(t *testing.T) {
 	}
 }
 
+func TestScoreToolWithOpenMeld(t *testing.T) {
+	s := newSession(t)
+	result := s.callTool(t, "mahjong.score", map[string]any{
+		"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p"},
+		"winning": "1p",
+		"melds":   []map[string]any{{"kind": "pon", "tiles": []string{"2p", "2p", "2p"}}},
+	})
+	if result["pattern"] != "standard" {
+		t.Fatalf("open hand should decompose: %v", result)
+	}
+	if result["meld_count"] != float64(1) {
+		t.Fatalf("meld_count = %v", result["meld_count"])
+	}
+	if result["has_yaku"] != true {
+		t.Fatalf("open hand 123m456m789m + pon 2p should have 一气通贯: %v", result)
+	}
+	points, _ := result["points"].(map[string]any)
+	if total, _ := points["total"].(float64); total <= 0 {
+		t.Fatalf("points.total = %v", points["total"])
+	}
+}
+
 func TestYakuPotentialTool(t *testing.T) {
 	s := newSession(t)
 	result := s.callTool(t, "mahjong.yaku_potential", map[string]any{
@@ -463,10 +485,20 @@ func TestToolErrors(t *testing.T) {
 			"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"},
 			"winning": "9s",
 		}, codeInvalidParams, ""},
-		{"score open hand unsupported", "mahjong.score", map[string]any{
+		{"score menzen mismatch", "mahjong.score", map[string]any{
 			"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"},
 			"winning": "4p",
 			"ctx":     map[string]any{"menzen": false},
+		}, codeInvalidParams, ""},
+		{"score bad meld kind", "mahjong.score", map[string]any{
+			"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"},
+			"winning": "4p",
+			"melds":   []map[string]any{{"kind": "nope", "tiles": []string{"1m", "2m", "3m"}}},
+		}, codeInvalidParams, ""},
+		{"score bad meld shape", "mahjong.score", map[string]any{
+			"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p"},
+			"winning": "1p",
+			"melds":   []map[string]any{{"kind": "pon", "tiles": []string{"1m", "1m"}}},
 		}, codeInvalidParams, ""},
 		{"score bad ctx wind", "mahjong.score", map[string]any{
 			"hand":    []string{"1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p"},

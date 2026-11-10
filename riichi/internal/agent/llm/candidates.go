@@ -50,6 +50,31 @@ func meldCountOf(obs game.Observation) int {
 	return len(obs.Melds[obs.Seat])
 }
 
+// calledMelds 把 Observation 里自己的副露转成 rules.Meld（Decompose/S5b 的入参格式）。
+//
+// Observation.Melds 是 game.Meld（Kind/Tiles/From），rules 包不 import game，
+// 所以这里逐字段转换；Open 标记由 rules 根据 Kind 自动推导（暗杠不破坏门清）。
+func calledMelds(obs game.Observation) []rules.Meld {
+	if int(obs.Seat) >= len(obs.Melds) || len(obs.Melds[obs.Seat]) == 0 {
+		return nil
+	}
+	out := make([]rules.Meld, 0, len(obs.Melds[obs.Seat]))
+	for _, meld := range obs.Melds[obs.Seat] {
+		out = append(out, rules.Meld{Kind: string(meld.Kind), Tiles: append([]tile.Tile(nil), meld.Tiles...)})
+	}
+	return out
+}
+
+// menzenOf 报告这组副露是否保持门清（只有暗杠不算开门）。
+func menzenOf(called []rules.Meld) bool {
+	for _, meld := range called {
+		if meld.Kind != rules.MeldKanAnkan {
+			return false
+		}
+	}
+	return true
+}
+
 // remainingCopies 返回某牌种在未可见区域还剩几张。
 func remainingCopies(visible [tile.NumKinds]uint8, kind tile.Kind) int {
 	if kind >= tile.NumKinds {
@@ -93,15 +118,17 @@ func removeTile(hand []tile.Tile, target tile.Tile) ([]tile.Tile, bool) {
 	return nil, false
 }
 
-// ukeireAfter 计算 13-3*meldCount 张手牌的有效进张张数（按剩余枚数加权）。
+// ukeireAfter 计算 13-3*meldCount 张暗牌的有效进张张数（按剩余枚数加权）。
 //
-// 有效 = 摸到后能让向听下降，或（门清时）直接构成和牌形。
+// 有效 = 摸到后能让向听下降，或直接构成和牌形（含副露；S5b 起 rules.Decompose 支持副露）。
 // 注意：rules.Shanten 对 13 张听牌形只返回 0、不会返回 -1，所以和牌张要单独用
-// Decompose 判断；副露手牌（meldCount>0）暂时只按「向听下降」统计（和牌张会漏报）。
-func ukeireAfter(hand []tile.Tile, meldCount, baseShanten int, visible [tile.NumKinds]uint8) int {
+// Decompose 判断。
+func ukeireAfter(hand []tile.Tile, called []rules.Meld, baseShanten int, visible [tile.NumKinds]uint8) int {
 	if baseShanten == rules.ShantenInvalid {
 		return 0
 	}
+	meldCount := len(called)
+	winningHandSize := 14 - 3*meldCount
 	total := 0
 	for kind := tile.Kind(0); kind < tile.NumKinds; kind++ {
 		remaining := remainingCopies(visible, kind)
@@ -111,7 +138,7 @@ func ukeireAfter(hand []tile.Tile, meldCount, baseShanten int, visible [tile.Num
 		after := make([]tile.Tile, 0, len(hand)+1)
 		after = append(after, hand...)
 		after = append(after, tile.Tile{Kind: kind})
-		if meldCount == 0 && len(after) == 14 && isWinningTiles(after) {
+		if len(after) == winningHandSize && isWinningTiles(after, called) {
 			total += remaining
 			continue
 		}
@@ -128,18 +155,18 @@ func ukeireAfter(hand []tile.Tile, meldCount, baseShanten int, visible [tile.Num
 	return total
 }
 
-// isWinningTiles 报告一组 14 张门清手牌是否已经和牌。
+// isWinningTiles 报告一组暗牌是否已经和牌（长度须为 14-3*len(called)）。
 //
 // rules.Decompose 要求「hand 含 winning」，所以对出现过的每种牌都试一次拆解；
 // 任意一种成立即说明这手牌是和牌形。
-func isWinningTiles(hand14 []tile.Tile) bool {
-	seen := make(map[tile.Kind]struct{}, len(hand14))
-	for _, handTile := range hand14 {
+func isWinningTiles(hand []tile.Tile, called []rules.Meld) bool {
+	seen := make(map[tile.Kind]struct{}, len(hand))
+	for _, handTile := range hand {
 		if _, ok := seen[handTile.Kind]; ok {
 			continue
 		}
 		seen[handTile.Kind] = struct{}{}
-		if _, ok := rules.Decompose(hand14, nil, handTile); ok {
+		if _, ok := rules.Decompose(hand, called, handTile); ok {
 			return true
 		}
 	}
@@ -208,17 +235,14 @@ func baseDanger(kind tile.Kind, remaining int) float64 {
 	}
 }
 
-// maxPotentialHan 估算「当前 13 张手牌若和牌」的最大翻数（含宝牌/赤宝牌）。
+// maxPotentialHan 估算「当前暗牌若和牌」的最大翻数（含宝牌/赤宝牌）。
 //
-// 只对门清有效（rules.Decompose 当前只支持门清）；非门清返回 0。
-// 做法：对 34 种牌各试一次和了拆解 + Evaluate，取 han+dora 最大值。
+// 对 34 种和了牌各试一次和了拆解 + Evaluate，取 han+dora 最大值；
+// 副露由 rules.Decompose（S5b 起支持副露）处理，Menzen 按副露自动推导。
 // 这个量让 LLM 知道「留哪些牌能打出更高的点数」，而不是只看向听。
-func maxPotentialHan(obs game.Observation, hand []tile.Tile, meldCount int) int {
-	if meldCount != 0 {
-		return 0
-	}
+func maxPotentialHan(obs game.Observation, hand []tile.Tile, called []rules.Meld) int {
 	ctx := rules.ScoreContext{
-		Menzen:         true,
+		Menzen:         menzenOf(called),
 		SeatWind:       tile.East,
 		RoundWind:      tile.East + tile.Kind(obs.RoundWind),
 		DoraIndicators: obs.DoraIndicators,
@@ -226,10 +250,10 @@ func maxPotentialHan(obs game.Observation, hand []tile.Tile, meldCount int) int 
 	best := 0
 	for kind := tile.Kind(0); kind < tile.NumKinds; kind++ {
 		winning := tile.Tile{Kind: kind}
-		tiles14 := make([]tile.Tile, 0, len(hand)+1)
-		tiles14 = append(tiles14, hand...)
-		tiles14 = append(tiles14, winning)
-		shape, ok := rules.Decompose(tiles14, nil, winning)
+		tiles := make([]tile.Tile, 0, len(hand)+1)
+		tiles = append(tiles, hand...)
+		tiles = append(tiles, winning)
+		shape, ok := rules.Decompose(tiles, called, winning)
 		if !ok {
 			continue
 		}
@@ -252,6 +276,7 @@ func evaluateCandidates(obs game.Observation) []Candidate {
 		return nil
 	}
 	meldCount := meldCountOf(obs)
+	called := calledMelds(obs)
 	visible := visibleCountsOf(obs)
 	out := make([]Candidate, 0, len(cands))
 	for _, discard := range cands {
@@ -266,7 +291,7 @@ func evaluateCandidates(obs game.Observation) []Candidate {
 		out = append(out, Candidate{
 			Tile:    discard.String(),
 			Shanten: shanten,
-			Ukeire:  ukeireAfter(after, meldCount, shanten, visible),
+			Ukeire:  ukeireAfter(after, called, shanten, visible),
 			Danger:  round1(dangerScore(obs, discard.Kind, visible)),
 		})
 	}
@@ -301,9 +326,9 @@ func TopCandidates(obs game.Observation, k int) []Candidate {
 	if len(candidates) > k {
 		candidates = candidates[:k]
 	}
-	meldCount := meldCountOf(obs)
+	called := calledMelds(obs)
 
-	// 回填打点潜力：需要「切出这张后的手牌」，从牌面文本还原。
+	// 回填打点潜力：需要「切出这张后的暗牌」，从牌面文本还原。
 	for i := range candidates {
 		parsed, err := tile.ParseTile(candidates[i].Tile)
 		if err != nil {
@@ -313,7 +338,7 @@ func TopCandidates(obs game.Observation, k int) []Candidate {
 		if !ok {
 			continue
 		}
-		candidates[i].Potential = maxPotentialHan(obs, after, meldCount)
+		candidates[i].Potential = maxPotentialHan(obs, after, called)
 		candidates[i].Score = round1(
 			float64(candidates[i].Ukeire) -
 				float64(candidates[i].Shanten)*10 -

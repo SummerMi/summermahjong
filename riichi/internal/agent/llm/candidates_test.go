@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"summermahjong/riichi/internal/game"
+	"summermahjong/riichi/internal/rules"
 	"summermahjong/riichi/internal/tile"
 )
 
@@ -91,7 +92,7 @@ func TestDangerWithoutRiichiIsZero(t *testing.T) {
 	}
 }
 
-func TestPotentialIsZeroWithOpenMelds(t *testing.T) {
+func TestPotentialWithOpenMelds(t *testing.T) {
 	hand := mustTiles(t, "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p")
 	obs := game.Observation{
 		Seat:          0,
@@ -104,25 +105,46 @@ func TestPotentialIsZeroWithOpenMelds(t *testing.T) {
 	for _, handTile := range hand {
 		obs.LegalActions = append(obs.LegalActions, game.Action{Kind: game.ActDiscard, Seat: 0, Tile: handTile})
 	}
-	candidates := TopCandidates(obs, 5)
+	candidates := TopCandidates(obs, 20)
 	if len(candidates) == 0 {
 		t.Fatalf("expected candidates for open hand")
 	}
-	for _, candidate := range candidates {
-		if candidate.Potential != 0 {
-			t.Fatalf("open hand potential should be 0 (Decompose 只支持门清): %+v", candidate)
-		}
+	discard := findCandidate(candidates, "1p")
+	if discard == nil {
+		t.Fatalf("1p candidate missing: %+v", candidates)
+	}
+	// 切 1p 后：123m456m789m 1p + 副露 pon2p，和 1p 成一气通贯（副露 1 翻）+ 可能宝牌。
+	if discard.Potential == 0 {
+		t.Fatalf("open hand potential should be > 0: %+v", discard)
 	}
 }
 
-func TestMaxPotentialHanClosedHand(t *testing.T) {
-	hand := mustTiles(t, "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p")
+func TestCalledMeldsAndMenzen(t *testing.T) {
 	obs := makeObs(t, defaultHand14)
-	if got := maxPotentialHan(obs, hand, 0); got < 1 {
+	obs.Melds[0] = []game.Meld{{Kind: game.MeldKanAnkan, Tiles: mustTiles(t, "E", "E", "E", "E")}}
+	called := calledMelds(obs)
+	if len(called) != 1 || called[0].Kind != rules.MeldKanAnkan {
+		t.Fatalf("calledMelds = %+v", called)
+	}
+	if !menzenOf(called) {
+		t.Fatalf("暗杠不应破坏门清")
+	}
+	obs.Melds[0] = []game.Meld{{Kind: game.MeldChi, Tiles: mustTiles(t, "1m", "2m", "3m")}}
+	if menzenOf(calledMelds(obs)) {
+		t.Fatalf("吃是明副露，应破坏门清")
+	}
+}
+
+func TestMaxPotentialHanClosedAndOpen(t *testing.T) {
+	obs := makeObs(t, defaultHand14)
+	hand13 := mustTiles(t, "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p")
+	if got := maxPotentialHan(obs, hand13, nil); got < 1 {
 		t.Fatalf("maxPotentialHan(closed tenpai) = %d, want >= 1", got)
 	}
-	if got := maxPotentialHan(obs, hand, 1); got != 0 {
-		t.Fatalf("maxPotentialHan(open) = %d, want 0", got)
+	called := []rules.Meld{{Kind: rules.MeldPon, Tiles: mustTiles(t, "2p", "2p", "2p")}}
+	concealed10 := mustTiles(t, "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p")
+	if got := maxPotentialHan(obs, concealed10, called); got < 1 {
+		t.Fatalf("maxPotentialHan(open) = %d, want >= 1", got)
 	}
 }
 
@@ -152,7 +174,7 @@ func TestUkeireAfterTenpai(t *testing.T) {
 	visible := visibleCountsOf(obs)
 	// 打出 4p 后手牌：123m 456m 789m 11p 23p，听 1p（剩 2）与 4p（剩余 4-1=3）。
 	after := mustTiles(t, "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "1p", "2p", "3p")
-	if got := ukeireAfter(after, 0, 0, visible); got != 5 {
+	if got := ukeireAfter(after, nil, 0, visible); got != 5 {
 		t.Fatalf("ukeire = %d, want 5", got)
 	}
 }
