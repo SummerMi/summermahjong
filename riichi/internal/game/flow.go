@@ -151,7 +151,11 @@ func (s *State) applyDraw(a Action) error {
 	}
 	t, ok := s.Wall.Draw()
 	if !ok {
-		// 摸空：荒牌流局（结算写入事件，阶段进 RoundEnd）
+		// 摸空：荒牌流局（结算与 ryuukyoku/round_end 事件已写入状态）。
+		//
+		// 返回值是 error 用于让「驱动方」知道本局到此为止；但事件已经写入 State.Events，
+		// 驱动方必须先持久化/广播这些事件再停（transport room 的 applyAction 已处理），
+		// 否则会丢事件并卡在 await_draw（S11 现场 bug）。
 		s.finishRyuukyoku(RyuukyokuHaitei, false)
 		return fmt.Errorf("%w: 牌山已摸空（荒牌流局）", ErrIllegalAction)
 	}

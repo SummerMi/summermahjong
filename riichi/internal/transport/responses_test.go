@@ -391,6 +391,74 @@ func TestResponseWindowTimeout(t *testing.T) {
 	if countRoomEvent(r, game.EventRon) != 0 {
 		t.Fatal("超时不应产生荣和")
 	}
+	// 超时路径也必须广播 response_window_end（前端据此收起「等待响应」）
+	if seen := drainClientTypes(t, clients[0]); seen["response_window_end"] == 0 {
+		t.Fatalf("超时路径应广播 response_window_end，实际=%v", seen)
+	}
+}
+
+// TestResponseWindowTimeoutOverWS 真实 WS 超时路径：收到 responses 后不回复，
+// 服务端超时按 pass 结算并发 response_window_end。
+func TestResponseWindowTimeoutOverWS(t *testing.T) {
+	const maxSeed = 40
+	for seed := int64(1); seed <= maxSeed; seed++ {
+		_, ts := newResponseTestServer(t, 250*time.Millisecond)
+		client := ts.Client()
+		gameID := createGame(t, client, ts.URL, 0, map[string]any{
+			"seed":   seed,
+			"agents": []string{AgentHuman, AgentHuman, AgentFirstLegal, AgentFirstLegal},
+		})
+		conn0 := dialWS(t, ts, gameID, 0, mustToken(t, 0))
+		conn1 := dialWS(t, ts, gameID, 1, mustToken(t, 1))
+		resumeFrom(t, conn0, 0)
+		resumeFrom(t, conn1, 0)
+
+		view := getState(t, client, ts.URL, gameID, 0)
+		sendWS(t, conn0, map[string]any{
+			"type":      "action",
+			"seq":       stateSeq(t, view),
+			"action_id": "ws-timeout-1",
+			"action":    map[string]any{"kind": "discard", "tile": drawnTile(t, view)},
+		})
+
+		// 第一阶段：300ms 内看有没有给 seat1 的 responses；没有就换 seed
+		_ = conn1.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		sawResponses := false
+		for !sawResponses {
+			var msg wsMessage
+			if err := conn1.ReadJSON(&msg); err != nil {
+				break
+			}
+			if msg.Type == "responses" {
+				sawResponses = true
+			}
+		}
+		if !sawResponses {
+			_ = conn0.Close()
+			_ = conn1.Close()
+			continue
+		}
+
+		// 第二阶段：不回复，等待超时后的 response_window_end
+		_ = conn1.SetReadDeadline(time.Now().Add(3 * time.Second))
+		sawEnd := false
+		for !sawEnd {
+			var msg wsMessage
+			if err := conn1.ReadJSON(&msg); err != nil {
+				break
+			}
+			if msg.Type == "response_window_end" {
+				sawEnd = true
+			}
+		}
+		_ = conn0.Close()
+		_ = conn1.Close()
+		if !sawEnd {
+			t.Fatalf("seed=%d 超时后未收到 response_window_end", seed)
+		}
+		return
+	}
+	t.Fatalf("前 %d 个 seed 都没出现人类响应窗口", maxSeed)
 }
 
 // TestResponseWindowMultiRon 多人抢和：双响都成立（Ruleset.DoubleRon）。
@@ -759,6 +827,100 @@ func TestEndToEndHumanVsAIWithMeldWinAndRiichi(t *testing.T) {
 		"han=%d fu=%d points=%d rules直算(不含棒)=%d 最终点数=%v",
 		eventKinds(events), chiEvent.Payload, riichiEvent.Seat, winEvent.Seat,
 		han, fu, points, rulesPoints.Ron, lastSnap.observations[1].Scores)
+}
+
+// drainClientEventKinds 排空连接发送缓冲，返回收到的 event 消息 kind 列表。
+func drainClientEventKinds(t *testing.T, c *client) []string {
+	t.Helper()
+	kinds := make([]string, 0, 16)
+	for {
+		select {
+		case data := <-c.send:
+			var envelope struct {
+				Type string `json:"type"`
+				Kind string `json:"kind"`
+			}
+			if err := json.Unmarshal(data, &envelope); err != nil {
+				t.Fatalf("解析消息: %v (%s)", err, data)
+			}
+			if envelope.Type == "event" {
+				kinds = append(kinds, envelope.Kind)
+			}
+		default:
+			return kinds
+		}
+	}
+}
+
+// TestWallExhaustionBroadcastsAndPersists 活牌摸完：room 必须落库并广播 ryuukyoku +
+// round_end，状态推进到 round_end（S11 现场 bug：之前 applyDraw 摸空返回 error，
+// room 直接停止推进 → 事件丢失、房间卡在 await_draw / wall_remaining=0）。
+func TestWallExhaustionBroadcastsAndPersists(t *testing.T) {
+	st, err := game.NewWithOptions(5, game.DefaultRuleset(), game.Options{
+		ManualResponses: false, // 自动 pass：全 AI 局快速跑到荒牌流局
+		ScoreProvider:   game.RulesScorer{},
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	var agents [4]agent.Agent
+	for seat := 0; seat < 4; seat++ {
+		agents[seat] = agent.FirstLegal{}
+	}
+	r, clients := craftRoom(t, st, roomConfig{
+		agents:          agents,
+		agentTimeout:    50 * time.Millisecond,
+		responseTimeout: 50 * time.Millisecond,
+	})
+	r.Start()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := r.Snapshot()
+		if snap != nil && snap.phase == game.PhaseRoundEnd {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	snap := r.Snapshot()
+	if snap == nil || snap.phase != game.PhaseRoundEnd {
+		t.Fatalf("活牌摸完后 phase=%v want round_end", snap.phase)
+	}
+	if snap.wallRemaining != 0 {
+		t.Fatalf("终态 wall_remaining=%d want 0", snap.wallRemaining)
+	}
+
+	r.Close()
+	events, err := r.cfg.store.LoadEvents(context.Background(), r.id, 0)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	kinds := eventKinds(events)
+	hasRyuukyoku, hasRoundEnd := false, false
+	for _, kind := range kinds {
+		switch kind {
+		case game.EventRyuukyoku:
+			hasRyuukyoku = true
+		case game.EventRoundEnd:
+			hasRoundEnd = true
+		}
+	}
+	if !hasRyuukyoku || !hasRoundEnd {
+		t.Fatalf("摸空后事件未落库：ryuukyoku=%v round_end=%v kinds=%v", hasRyuukyoku, hasRoundEnd, kinds)
+	}
+
+	// 广播：客户端发送缓冲里应能读到 ryuukyoku / round_end
+	broadcast := false
+	for seat := 0; seat < 4; seat++ {
+		for _, kind := range drainClientEventKinds(t, clients[seat]) {
+			if kind == string(game.EventRyuukyoku) || kind == string(game.EventRoundEnd) {
+				broadcast = true
+			}
+		}
+	}
+	if !broadcast {
+		t.Fatal("ryuukyoku/round_end 未广播给客户端")
+	}
 }
 
 // eventKinds 提取事件类型序列（测试失败信息用）。

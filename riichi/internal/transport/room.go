@@ -308,6 +308,10 @@ func (r *Room) drive() {
 		case game.PhaseAwaitDraw:
 			// 摸牌没有选择余地：由服务端自动执行（人类/AI 一致），事件照常广播
 			if err := r.applyAction(game.Action{Kind: game.ActDraw, Seat: r.st.Turn}); err != nil {
+				if r.st.Phase == game.PhaseRoundEnd || r.st.Phase == game.PhaseGameEnd {
+					// 荒牌流局等合法终局：事件已在 applyAction 里落库/广播，正常停住
+					return
+				}
 				r.cfg.logger.Info("对局停止推进",
 					"game_id", r.id, "seq", r.st.Seq, "reason", err)
 				return
@@ -521,7 +525,9 @@ func (r *Room) handleResponseTimeout(gen int) {
 	if r.st.Phase != game.PhaseAwaitResponse || r.st.Pending == nil {
 		return
 	}
-	r.responseActive = false
+	// 注意：不要在这里把 responseActive 置 false —— afterApply 依赖它判断「刚才是否
+	// 有窗口在等」，从而广播 response_window_end。若先清零，超时路径前端就永远等不到
+	// 窗口结束消息（S11 验收现场 bug）。
 	seqBefore := r.st.Seq
 	if err := r.st.ResolveTimeout(); err != nil {
 		r.cfg.logger.Warn("响应超时结算失败", "game_id", r.id, "err", err)
@@ -591,8 +597,15 @@ func (r *Room) applyAction(action game.Action) error {
 	if action.Kind == game.ActDiscard && r.st.Drawn != nil && *r.st.Drawn == action.Tile {
 		tsumogiri = true
 	}
-	if err := r.st.Apply(action); err != nil {
-		return err
+	applyErr := r.st.Apply(action)
+	if applyErr != nil {
+		// 注意：有些「合法终局」会在返回错误前先写入事件（例如荒牌流局：
+		// applyDraw 写入 ryuukyoku/round_end 后返回 error）。这里必须先把新增事件
+		// 落库/广播，否则房间会卡在 await_draw 且客户端永远收不到流局事件。
+		if r.st.Seq > seqBefore {
+			r.afterApply(seqBefore, tsumogiri)
+		}
+		return applyErr
 	}
 	r.afterApply(seqBefore, tsumogiri)
 	return nil
