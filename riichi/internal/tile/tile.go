@@ -5,7 +5,10 @@
 //   - 字牌：东 E、南 S、西 W、北 N、白 P、发 F、中 C
 //   - 每种 4 张，共 34 种 × 4 = 136 张（不含花牌）
 //
-// 日麻特有：赤宝牌（红 5），用 Tile.Red 标记；文本用 "r5m" 表示，接受 "0m" 作为同义写法（天凤习惯）。
+// 日麻特有：赤宝牌（红 5），用 Tile.Aka 标记；文本用 "r5m" 表示，接受 "0m" 作为同义写法（天凤习惯）。
+//
+// 命名遵循 docs/riichi-接口契约-20261110.md §9：白 Haku、发 Hatsu、中 Chun、赤宝牌 Aka，
+// 避免「红中」与「赤宝牌」都用 Red 造成的歧义。
 package tile
 
 import (
@@ -89,9 +92,9 @@ const (
 	South // 南
 	West  // 西
 	North // 北
-	White // 白
-	Green // 发
-	Red   // 中
+	Haku  // 白（契约 §9 命名）
+	Hatsu // 发（契约 §9 命名）
+	Chun  // 中（契约 §9 命名）
 )
 
 // Suit 返回牌的花色。
@@ -135,7 +138,7 @@ func (k Kind) IsSimple() bool { return !k.IsTerminalOrHonor() }
 func (k Kind) IsWind() bool { return k >= East && k <= North }
 
 // IsDragon 报告是否三元牌（白发中）。
-func (k Kind) IsDragon() bool { return k >= White && k <= Red }
+func (k Kind) IsDragon() bool { return k >= Haku && k <= Chun }
 
 // IsFive 报告是否数牌 5（赤宝牌只可能是 5）。
 func (k Kind) IsFive() bool { return !k.IsHonor() && k.Number() == 5 }
@@ -155,11 +158,11 @@ func (k Kind) String() string {
 			return "W"
 		case North:
 			return "N"
-		case White:
+		case Haku:
 			return "P"
-		case Green:
+		case Hatsu:
 			return "F"
-		default:
+		default: // Chun
 			return "C"
 		}
 	}
@@ -171,12 +174,12 @@ func (k Kind) String() string {
 // 赤宝牌只可能是数牌 5（5m/5p/5s），并且每种至多 1 张。
 type Tile struct {
 	Kind Kind
-	Red  bool
+	Aka  bool // 赤宝牌（红 5）；字段名见契约 §9，避免与「中」混淆
 }
 
 // String 返回文本表示；赤宝牌带 "r" 前缀，例如 "r5m"。
 func (t Tile) String() string {
-	if t.Red {
+	if t.Aka {
 		return "r" + t.Kind.String()
 	}
 	return t.Kind.String()
@@ -199,11 +202,11 @@ func ParseKind(text string) (Kind, error) {
 		case 'N', 'n':
 			return North, nil
 		case 'P', 'p':
-			return White, nil
+			return Haku, nil
 		case 'F', 'f':
-			return Green, nil
+			return Hatsu, nil
 		case 'C', 'c':
-			return Red, nil
+			return Chun, nil
 		}
 		return 0, fmt.Errorf("%w: %q", ErrInvalidTile, text)
 	}
@@ -218,9 +221,7 @@ func ParseKind(text string) (Kind, error) {
 	n := int(num - '0')
 	switch suit {
 	case 'm', 'M':
-		if n > 9 {
-			return 0, fmt.Errorf("%w: %q", ErrInvalidTile, text)
-		}
+		// num 已限制在 '1'..'9'，n-1 必落在 0..8，不需要额外的上界判断。
 		return Man1 + Kind(n-1), nil
 	case 'p', 'P':
 		return Pin1 + Kind(n-1), nil
@@ -237,11 +238,11 @@ func ParseKind(text string) (Kind, error) {
 		case 4:
 			return North, nil
 		case 5:
-			return White, nil
+			return Haku, nil
 		case 6:
-			return Green, nil
+			return Hatsu, nil
 		case 7:
-			return Red, nil
+			return Chun, nil
 		}
 	}
 	return 0, fmt.Errorf("%w: %q", ErrInvalidTile, text)
@@ -258,7 +259,7 @@ func ParseTile(text string) (Tile, error) {
 		if !kind.IsFive() {
 			return Tile{}, fmt.Errorf("%w: red tile must be a 5, got %q", ErrInvalidTile, text)
 		}
-		return Tile{Kind: kind, Red: true}, nil
+		return Tile{Kind: kind, Aka: true}, nil
 	case len(text) == 2 && text[0] == '0':
 		kind, err := ParseKind("5" + text[1:])
 		if err != nil {
@@ -267,7 +268,7 @@ func ParseTile(text string) (Tile, error) {
 		if !kind.IsFive() {
 			return Tile{}, fmt.Errorf("%w: red tile must be a 5, got %q", ErrInvalidTile, text)
 		}
-		return Tile{Kind: kind, Red: true}, nil
+		return Tile{Kind: kind, Aka: true}, nil
 	default:
 		kind, err := ParseKind(text)
 		if err != nil {

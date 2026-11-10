@@ -40,11 +40,11 @@ func BuildDeck(redFives int) ([]Tile, error) {
 			}
 		}
 		for copyIndex := 0; copyIndex < CopiesPerKind; copyIndex++ {
-			red := false
+			aka := false
 			if redAt >= 0 && copyIndex == 0 {
-				red = true
+				aka = true
 			}
-			deck = append(deck, Tile{Kind: kind, Red: red})
+			deck = append(deck, Tile{Kind: kind, Aka: aka})
 		}
 	}
 	return deck, nil
