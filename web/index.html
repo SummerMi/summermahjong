@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>立直麻将 · 最小牌桌（S11）</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- ① 连接栏：服务器地址 / 对局 / 座位 / 令牌 -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">🀄</span>
+        <span class="brand-text">立直麻将 · 最小牌桌</span>
+        <span class="tag">S11</span>
+      </div>
+      <form class="conn-form" id="conn-form" autocomplete="off">
+        <label class="field">
+          <span>服务器</span>
+          <input id="server-url" name="server" type="text" value="http://127.0.0.1:8099"
+                 placeholder="http://127.0.0.1:8099" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>对局 ID</span>
+          <input id="game-id" name="game" type="text" placeholder="留空可「新建对局」" spellcheck="false">
+        </label>
+        <label class="field narrow">
+          <span>座位</span>
+          <select id="seat" name="seat">
+            <option value="0">0（东）</option>
+            <option value="1">1（南）</option>
+            <option value="2">2（西）</option>
+            <option value="3">3（北）</option>
+          </select>
+        </label>
+        <label class="field grow">
+          <span>JWT 令牌</span>
+          <span class="token-wrap">
+            <input id="token" name="token" type="password" placeholder="seat 0 的令牌" spellcheck="false">
+            <button type="button" id="btn-token-toggle" class="btn tiny ghost" title="显示 / 隐藏令牌">显示</button>
+          </span>
+        </label>
+        <div class="conn-buttons">
+          <button type="button" id="btn-new" class="btn ghost" title="POST /api/v1/games 建一局（1 人类 + 3 AI）">新建对局</button>
+          <button type="submit" id="btn-connect" class="btn primary">连接</button>
+          <button type="button" id="btn-disconnect" class="btn ghost" disabled>断开</button>
+        </div>
+        <div class="pills">
+          <span id="status-pill" class="pill idle">未连接</span>
+          <span id="seq-pill" class="pill" title="最近已应用的事件序号">seq —</span>
+          <span id="source-pill" class="pill" title="状态来源">状态源 —</span>
+          <span id="rtt-pill" class="pill" title="ping/pong 往返">RTT —</span>
+        </div>
+      </form>
+    </header>
+
+    <!-- ② 横幅：模式说明 / 错误提示 -->
+    <div id="banner" class="banner hidden" role="status"></div>
+
+    <main class="main">
+      <!-- ③ 牌桌 -->
+      <section class="table-wrap">
+        <div class="table" id="table">
+          <div class="seat-zone zone-top" data-zone="top"></div>
+          <div class="seat-zone zone-left" data-zone="left"></div>
+          <div class="center" id="center"></div>
+          <div class="seat-zone zone-right" data-zone="right"></div>
+          <div class="seat-zone zone-bottom" data-zone="bottom"></div>
+        </div>
+
+        <!-- 思考条：在牌桌与动作区之间，不遮挡手牌 -->
+        <div class="thought-bar hidden" id="thought-bar">
+          <span class="thought-agent" id="thought-agent"></span>
+          <span class="thought-text" id="thought-text"></span>
+        </div>
+
+        <!-- ④ 动作区 -->
+        <div class="action-bar">
+          <div class="actions" id="actions"></div>
+          <div class="action-hint" id="action-hint"></div>
+          <div class="demo-actions">
+            <button type="button" class="btn tiny ghost" id="btn-drop"
+                    title="模拟网络中断：只关闭 WebSocket，随后走自动重连 + resume 补齐（不刷新页面）">模拟断线（自动重连）</button>
+            <button type="button" class="btn tiny ghost" id="btn-demo-thought"
+                    title="S6 目前不产生 agent_thought 事件；此按钮在本地注入一条，仅用于验收思考条 UI">演示思考条（本地注入）</button>
+            <button type="button" class="btn tiny ghost" id="btn-resync" title="重新拉取 GET /api/v1/games/{id} 并 resume">重新同步</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ⑤ 右侧：事件日志 -->
+      <aside class="side">
+        <div class="side-head">
+          <span>事件日志</span>
+          <span class="side-count" id="event-count">0</span>
+          <label class="pause"><input type="checkbox" id="log-pause"> 暂停滚动</label>
+          <button type="button" class="btn tiny ghost" id="btn-clear-log">清空</button>
+        </div>
+        <ol class="event-log" id="event-log"></ol>
+        <div class="side-foot">
+          <div class="hint-title">提示</div>
+          <ul class="hints">
+            <li>点击自己的手牌 = 打牌（<code>discard</code>）。</li>
+            <li>断线后自动重连，并按 <code>resume(last_seq)</code> 补齐事件。</li>
+            <li>刷新页面会用 localStorage 里的对局/令牌自动重连。</li>
+            <li>副露 / 立直 / 和了 / pass 按钮来自 <code>legal_actions</code>，服务端 M2 尚未接完时点它会收到 <code>ILLEGAL_ACTION</code>，属预期。</li>
+          </ul>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
