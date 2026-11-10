@@ -3,7 +3,9 @@ package eval
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
+	"time"
 
 	"summermahjong/riichi/internal/game"
 )
@@ -237,5 +239,167 @@ func TestSummarizeSkipsRankForAbortedGames(t *testing.T) {
 	// 轮数仍然计入（已经打完的轮是有数据的）
 	if summary.Seats[0].Rounds != 2 {
 		t.Fatalf("Rounds 应包含 aborted 场的已完成轮数: %+v", summary.Seats[0])
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 除零 / 无样本边界：JSON 必须输出 null，绝不出现 NaN/Inf（原 bug：
+// `--calls=agent` 时副露次数/轮 >1 → p(1-p)<0 → 二项 CI 的 sqrt 得 NaN → 写报告失败）。
+// ────────────────────────────────────────────────────────────────────────────
+
+// marshalFinite 序列化并断言结果里没有 NaN/Inf 字面量。
+func marshalFinite(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal 失败（极可能出现了 NaN/Inf）: %v", err)
+	}
+	body := string(data)
+	for _, bad := range []string{"NaN", "+Inf", "-Inf"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("JSON 里出现了非法值 %s: %s", bad, body)
+		}
+	}
+	return body
+}
+
+func TestRateJSONEdgeCases(t *testing.T) {
+	// 1) 分母为 0 → 整个指标为 null
+	if body := marshalFinite(t, NewRate(0, 0)); body != "null" {
+		t.Fatalf("分母 0 应序列化为 null，实际 %s", body)
+	}
+	if NewRate(0, 0).HasData() {
+		t.Fatalf("分母 0 时 HasData 应为 false")
+	}
+
+	// 2) 计数型指标（副露次数/轮，>1）：value 保留、CI 为 null，不再出现 NaN
+	rate := NewRate(143, 58)
+	if math.IsNaN(rate.Low) || math.IsNaN(rate.High) {
+		t.Fatalf("NewRate 不应产生 NaN: %+v", rate)
+	}
+	body := marshalFinite(t, rate)
+	if !strings.Contains(body, `"value":2.4655`) {
+		t.Fatalf("计数型指标的 value 应保留，实际 %s", body)
+	}
+	if !strings.Contains(body, `"ci_low":null`) || !strings.Contains(body, `"ci_high":null`) {
+		t.Fatalf("计数型指标没有有意义的二项 CI，应输出 null: %s", body)
+	}
+
+	// 3) 正常比例仍带 CI
+	normal := marshalFinite(t, NewRate(25, 100))
+	if !strings.Contains(normal, `"ci_low":0.165`) || !strings.Contains(normal, `"ci_high":0.3348`) {
+		t.Fatalf("正常比例的 CI 不应丢失: %s", normal)
+	}
+}
+
+func TestMeanCIJSONEdgeCases(t *testing.T) {
+	if body := marshalFinite(t, NewMeanCI(0, 0, 0)); body != "null" {
+		t.Fatalf("n=0 应序列化为 null，实际 %s", body)
+	}
+	if NewMeanCI(0, 0, 0).HasData() {
+		t.Fatalf("n=0 时 HasData 应为 false")
+	}
+	body := marshalFinite(t, NewMeanCI(6, 20, 2))
+	if !strings.Contains(body, `"mean":3`) || !strings.Contains(body, `"n":2`) {
+		t.Fatalf("均值 JSON 不符合预期: %s", body)
+	}
+}
+
+func TestDurationStatJSONEdgeCases(t *testing.T) {
+	if body := marshalFinite(t, NewDurationStat(nil)); body != "null" {
+		t.Fatalf("空样本应序列化为 null，实际 %s", body)
+	}
+	if NewDurationStat(nil).HasData() {
+		t.Fatalf("空样本 HasData 应为 false")
+	}
+	body := marshalFinite(t, NewDurationStat([]float64{1, 2, 3}))
+	if !strings.Contains(body, `"count":3`) || !strings.Contains(body, `"p50_ms":2`) {
+		t.Fatalf("耗时统计 JSON 不符合预期: %s", body)
+	}
+}
+
+// TestSummaryJSONBoundaries 覆盖 0 局 / 0 和了 / 0 立直 / 0 决策四种边界。
+func TestSummaryJSONBoundaries(t *testing.T) {
+	cfg := Config{Agents: []string{"a", "b", "c", "d"}}
+
+	// 1) 0 局：所有比率/均值/分位都应为 null
+	emptyBody := marshalFinite(t, summarize(cfg, nil))
+	for _, want := range []string{
+		`"win_rate":null`, `"avg_rank":null`, `"avg_win_points":null`,
+		`"decision_ms":null`, `"duration_ms":null`,
+	} {
+		if !strings.Contains(emptyBody, want) {
+			t.Fatalf("0 局时缺少 %s\nJSON: %s", want, emptyBody)
+		}
+	}
+
+	// 2) 有轮数但 0 和了 / 0 立直 / 0 决策
+	games := []GameResult{{
+		Seed:        1,
+		Rounds:      2,
+		FinalScores: [4]int{25000, 25000, 25000, 25000},
+		Ranks:       [4]int{1, 1, 1, 1},
+	}}
+	body := marshalFinite(t, summarize(cfg, games))
+	// 和了率/立直率有分母（轮数）：value=0 而不是 null
+	if !strings.Contains(body, `"win_rate":{"num":0,"den":2,"value":0`) {
+		t.Fatalf("0 和了时 win_rate 应为 0/2，实际 JSON: %s", body)
+	}
+	if !strings.Contains(body, `"riichi_rate":{"num":0,"den":2,"value":0`) {
+		t.Fatalf("0 立直时 riichi_rate 应为 0/2，实际 JSON: %s", body)
+	}
+	// 平均打点（0 和了）与决策分位（0 决策）没有样本 → null
+	if !strings.Contains(body, `"avg_win_points":null`) {
+		t.Fatalf("0 和了时 avg_win_points 应为 null: %s", body)
+	}
+	if !strings.Contains(body, `"decision_ms":null`) {
+		t.Fatalf("0 决策时 decision_ms 应为 null: %s", body)
+	}
+	if !strings.Contains(body, `"avg_rank":{"n":1`) {
+		t.Fatalf("平均顺位有 1 场数据，应为对象: %s", body)
+	}
+}
+
+// TestReportJSONWithCountTypeMeldRate 直接复现原 bug 场景：每轮副露次数 >1 时
+// 报告仍必须能写出（CI 为 null，不再 NaN）。
+func TestReportJSONWithCountTypeMeldRate(t *testing.T) {
+	cfg, err := (Config{
+		Seeds:      []int64{1},
+		Agents:     []string{"shanten:attack", "defense:defense", "search:closed", "random"},
+		RoundLimit: 1,
+	}).withDefaults()
+	if err != nil {
+		t.Fatalf("withDefaults: %v", err)
+	}
+	games := []GameResult{{
+		Seed:        1,
+		Rounds:      1,
+		FinalScores: [4]int{30000, 25000, 25000, 20000},
+		Ranks:       ranksOf([4]int{30000, 25000, 25000, 20000}),
+		Seats: [4]SeatRoundStats{
+			{Melds: 5, Decisions: 3, Wins: 1, WinPoints: 1000},
+			{Melds: 4},
+			{Melds: 3},
+			{Melds: 2},
+		},
+		LatenciesMs: [4][]float64{{1, 2, 3}, {}, {}, {}},
+	}}
+	result := &Result{
+		Config:    cfg,
+		Games:     games,
+		Summary:   summarize(cfg, games),
+		StartedAt: time.Now(),
+	}
+	report := BuildReport(result, ReportOptions{SeedSpec: "1", GitSHA: "deadbeef"})
+	body := marshalFinite(t, report)
+	if !strings.Contains(body, `"meld_rate":{"num":5,"den":1,"value":5`) {
+		t.Fatalf("副露/轮 = 5 应原样输出，实际: %s", body)
+	}
+	if !strings.Contains(body, `"ci_low":null`) {
+		t.Fatalf("计数型指标的 CI 应为 null: %s", body)
+	}
+	// 全量报告 JSON 也必须能序列化（原 bug 就在这里失败）
+	if !strings.Contains(body, `"manifest"`) || !strings.Contains(body, `"games"`) {
+		t.Fatalf("报告结构不完整: %s", body)
 	}
 }

@@ -12,6 +12,12 @@ import (
 const z95 = 1.959963984540054
 
 // Rate 是带 95% 置信区间的比例（正态近似：p ± 1.96·√(p(1-p)/n)）。
+//
+// 序列化约定（保证 NaN/Inf 永远不进 JSON）：
+//   - 分母为 0（没有样本）→ 整个指标序列化为 null；
+//   - 计数型指标（例如「每轮副露次数」= 副露事件数 / 轮数，可能 > 1）没有有意义的
+//     二项置信区间 → value 照常输出，ci_low / ci_high 为 null；
+//   - 任何非有限值（NaN/Inf）都序列化为 null。
 type Rate struct {
 	Num   int64   `json:"num"`
 	Den   int64   `json:"den"`
@@ -20,7 +26,7 @@ type Rate struct {
 	High  float64 `json:"ci_high"`
 }
 
-// NewRate 构造比例与置信区间；分母为 0 时全部为 0。
+// NewRate 构造比例与置信区间；分母为 0 时返回零值（序列化为 null）。
 func NewRate(num, den int64) Rate {
 	r := Rate{Num: num, Den: den}
 	if den <= 0 {
@@ -28,13 +34,41 @@ func NewRate(num, den int64) Rate {
 	}
 	p := float64(num) / float64(den)
 	r.Value = p
+	// 计数型指标（如副露次数 / 轮）可能 > 1：二项方差 p(1-p) 无定义，CI 留空。
+	if p < 0 || p > 1 {
+		return r
+	}
 	se := math.Sqrt(p * (1 - p) / float64(den))
 	r.Low = clamp01(p - z95*se)
 	r.High = clamp01(p + z95*se)
 	return r
 }
 
+// HasData 报告该指标是否有样本（分母 > 0）。
+func (r Rate) HasData() bool { return r.Den > 0 }
+
+// MarshalJSON 实现 json.Marshaler：无样本 → null；计数型指标 → CI 为 null。
+func (r Rate) MarshalJSON() ([]byte, error) {
+	if r.Den <= 0 {
+		return []byte("null"), nil
+	}
+	out := struct {
+		Num   int64    `json:"num"`
+		Den   int64    `json:"den"`
+		Value *float64 `json:"value"`
+		Low   *float64 `json:"ci_low"`
+		High  *float64 `json:"ci_high"`
+	}{Num: r.Num, Den: r.Den, Value: finitePtr(r.Value)}
+	if r.Value >= 0 && r.Value <= 1 {
+		out.Low = finitePtr(r.Low)
+		out.High = finitePtr(r.High)
+	}
+	return json.Marshal(out)
+}
+
 // MeanCI 是带 95% 置信区间的均值（样本方差 → 标准误，n<2 时区间退化为点值）。
+//
+// 样本数为 0 时序列化为 null；非有限值字段序列化为 null。
 type MeanCI struct {
 	N      int64   `json:"n"`
 	Mean   float64 `json:"mean"`
@@ -66,7 +100,32 @@ func NewMeanCI(sum, sumSquares float64, n int64) MeanCI {
 	return m
 }
 
+// HasData 报告该指标是否有样本（n > 0）。
+func (m MeanCI) HasData() bool { return m.N > 0 }
+
+// MarshalJSON 实现 json.Marshaler：无样本 → null；非有限值 → null。
+func (m MeanCI) MarshalJSON() ([]byte, error) {
+	if m.N <= 0 {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		N      int64    `json:"n"`
+		Mean   *float64 `json:"mean"`
+		StdDev *float64 `json:"stddev"`
+		Low    *float64 `json:"ci_low"`
+		High   *float64 `json:"ci_high"`
+	}{
+		N:      m.N,
+		Mean:   finitePtr(m.Mean),
+		StdDev: finitePtr(m.StdDev),
+		Low:    finitePtr(m.Low),
+		High:   finitePtr(m.High),
+	})
+}
+
 // DurationStat 是耗时分布（毫秒）。
+//
+// 样本数为 0 时序列化为 null；非有限值字段序列化为 null。
 type DurationStat struct {
 	Count  int64   `json:"count"`
 	MeanMs float64 `json:"mean_ms"`
@@ -93,6 +152,29 @@ func NewDurationStat(values []float64) DurationStat {
 	stat.P95Ms = percentileSorted(sorted, 0.95)
 	stat.MaxMs = sorted[len(sorted)-1]
 	return stat
+}
+
+// HasData 报告该指标是否有样本（count > 0）。
+func (d DurationStat) HasData() bool { return d.Count > 0 }
+
+// MarshalJSON 实现 json.Marshaler：无样本 → null；非有限值 → null。
+func (d DurationStat) MarshalJSON() ([]byte, error) {
+	if d.Count <= 0 {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		Count  int64    `json:"count"`
+		MeanMs *float64 `json:"mean_ms"`
+		P50Ms  *float64 `json:"p50_ms"`
+		P95Ms  *float64 `json:"p95_ms"`
+		MaxMs  *float64 `json:"max_ms"`
+	}{
+		Count:  d.Count,
+		MeanMs: finitePtr(d.MeanMs),
+		P50Ms:  finitePtr(d.P50Ms),
+		P95Ms:  finitePtr(d.P95Ms),
+		MaxMs:  finitePtr(d.MaxMs),
+	})
 }
 
 // percentileSorted 在已排序切片上取 p 分位（nearest-rank 法）。
@@ -347,4 +429,20 @@ func clamp01(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// finitePtr 把非有限值（NaN/Inf）变成 nil（JSON null）。
+//
+// encoding/json 拒绝序列化 NaN/Inf，这里是最后一道防线：即使上游算出 NaN，
+// 报告也只会是 null，不会让整个 Run/Write 失败。
+func finitePtr(v float64) *float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return nil
+	}
+	return &v
+}
+
+// isFinite 报告 v 是否有限。
+func isFinite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
 }

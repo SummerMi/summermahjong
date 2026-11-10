@@ -185,8 +185,12 @@ func (p *Pairwise) Ratings(iterations int) EloResult {
 	ratings := make([]float64, n)
 	mean := 0.0
 	for i, v := range pv {
-		ratings[i] = 400 / math.Ln10 * math.Log(v)
-		mean += ratings[i]
+		rating := 400 / math.Ln10 * math.Log(v)
+		if math.IsNaN(rating) || math.IsInf(rating, 0) {
+			rating = 0 // 数值兜底：绝不让 NaN/Inf 进入 ratings
+		}
+		ratings[i] = rating
+		mean += rating
 	}
 	mean /= float64(n)
 	for i, name := range p.names {

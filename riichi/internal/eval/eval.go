@@ -354,7 +354,10 @@ func playGame(cfg Config, seed int64) GameResult {
 // decideOne 让 agent 对一次观察做决策，并记录耗时与决策次数。
 func decideOne(a agent.Agent, obs game.Observation, seat game.Seat, timeout time.Duration, res *GameResult) (game.Action, error) {
 	if len(obs.LegalActions) == 0 {
-		return game.Action{}, fmt.Errorf("没有合法动作（seat=%d，hand=%d 张）", seat, len(obs.Hand))
+		// 诊断信息：出问题时能直接看出是哪种非法状态（手牌/副露/立直/摸牌）。
+		return game.Action{}, fmt.Errorf(
+			"没有合法动作（seat=%d hand=%d melds=%d riichi=%v drawn=%v wall=%d）",
+			seat, len(obs.Hand), len(obs.Melds[seat]), obs.Riichi[seat], obs.Drawn != nil, obs.WallRemaining)
 	}
 	started := time.Now()
 	action, err := agent.DecideWithContext(context.Background(), a, obs, timeout)

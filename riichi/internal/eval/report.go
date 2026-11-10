@@ -88,7 +88,29 @@ func BuildReport(result *Result, opts ReportOptions) Report {
 		Games:    append([]GameResult(nil), result.Games...),
 		Notes:    buildNotes(result, opts.Notes),
 	}
+	sanitizeReport(&report)
 	return report
+}
+
+// sanitizeReport 兜底清理报告里的非有限浮点。
+//
+// 指标结构（Rate/MeanCI/DurationStat）已用 MarshalJSON 把无样本/NaN 输出成 null；
+// 这里再清理 manifest / games / ELO 里的裸 float 字段，保证 encoding/json 永不报
+// "unsupported value: NaN"。
+func sanitizeReport(report *Report) {
+	if !isFinite(report.Manifest.DurationMs) {
+		report.Manifest.DurationMs = 0
+	}
+	for i := range report.Games {
+		if !isFinite(report.Games[i].DurationMs) {
+			report.Games[i].DurationMs = 0
+		}
+	}
+	for name, rating := range report.Summary.Elo.Ratings {
+		if !isFinite(rating) {
+			report.Summary.Elo.Ratings[name] = 1500
+		}
+	}
 }
 
 // configHash 对影响结果的关键配置做 SHA-256，任何配置变化都会改变 manifest。
@@ -179,6 +201,7 @@ func GitSHA(ctx context.Context) string {
 
 // Write 把 report.json / report.md / manifest.json 写到 outDir。
 func Write(outDir string, report Report) error {
+	sanitizeReport(&report)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("eval: 创建输出目录: %w", err)
 	}
@@ -233,7 +256,7 @@ func (r Report) Markdown() string {
 	writeLine("")
 	writeLine("## 2. 座位指标（%d 轮 / %d 场）", r.Summary.Rounds, r.Summary.Games)
 	writeLine("")
-	writeLine("| 座位 | agent | 决策数 | 和了率 | 放铳率 | 平均顺位 | 平均打点 | 立直率 | 副露率 | 副露和了占比 | P50/P95 (ms) | 役满 |")
+	writeLine("| 座位 | agent | 决策数 | 和了率 | 放铳率 | 平均顺位 | 平均打点 | 立直率 | 副露/轮 | 副露和了占比 | P50/P95 (ms) | 役满 |")
 	writeLine("|---|---|---|---|---|---|---|---|---|---|---|---|")
 	for _, seat := range r.Summary.Seats {
 		writeLine("| %d | %s | %d | %s | %s | %s | %s | %s | %s | %s | %.2f / %.2f | %d |",
@@ -288,9 +311,15 @@ func shortHash(hash string) string {
 }
 
 // formatRate 渲染比例与置信区间（如 "24.3% [18.1, 31.9]"）。
+//
+// 计数型指标（value > 1，例如每轮副露次数）没有二项置信区间，直接显示为「N 次/轮」；
+// 无样本时显示 "—"（JSON 里对应 null）。
 func formatRate(rate Rate) string {
-	if rate.Den == 0 {
+	if !rate.HasData() {
 		return "—"
+	}
+	if rate.Value < 0 || rate.Value > 1 {
+		return fmt.Sprintf("%.2f 次/轮", rate.Value)
 	}
 	return fmt.Sprintf("%.1f%% [%.1f, %.1f]", 100*rate.Value, 100*rate.Low, 100*rate.High)
 }

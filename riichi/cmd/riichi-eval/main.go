@@ -175,7 +175,7 @@ func splitAgents(spec string) []string {
 func printSummary(report eval.Report, outDir string) {
 	fmt.Println()
 	fmt.Printf("%-4s %-22s %8s %18s %18s %16s %12s %10s\n",
-		"座位", "agent", "决策数", "和了率", "放铳率", "平均顺位", "立直率", "副露率")
+		"座位", "agent", "决策数", "和了率", "放铳率", "平均顺位", "立直率", "副露/轮")
 	for _, seat := range report.Summary.Seats {
 		fmt.Printf("%-6d %-22s %8d %18s %18s %16s %12s %10s\n",
 			seat.Seat, seat.Agent, seat.Decisions,
@@ -192,17 +192,20 @@ func printSummary(report eval.Report, outDir string) {
 		outDir, report.Summary.Games, report.Summary.Rounds, report.Summary.ErrorN)
 }
 
-// formatRate 渲染比例与 95% 置信区间。
+// formatRate 渲染比例与 95% 置信区间；计数型指标（>1）显示为「N 次/轮」。
 func formatRate(rate eval.Rate) string {
-	if rate.Den == 0 {
+	if !rate.HasData() {
 		return "—"
+	}
+	if rate.Value < 0 || rate.Value > 1 {
+		return fmt.Sprintf("%.2f 次/轮", rate.Value)
 	}
 	return fmt.Sprintf("%.1f%% [%.1f,%.1f]", 100*rate.Value, 100*rate.Low, 100*rate.High)
 }
 
 // formatMean 渲染均值与 95% 置信区间。
 func formatMean(stat eval.MeanCI) string {
-	if stat.N == 0 {
+	if !stat.HasData() {
 		return "—"
 	}
 	return fmt.Sprintf("%.2f [%.2f,%.2f]", stat.Mean, stat.Low, stat.High)
