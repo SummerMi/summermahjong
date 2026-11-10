@@ -41,6 +41,10 @@ type Observation struct {
 	Honba          int
 	RiichiSticks   int
 	LegalActions   []Action
+	// Responses 是响应窗口（PhaseAwaitResponse）里该座位可选的 ron/pon/kan/chi/pass。
+	// 契约 §2.5 的 LegalActions 只描述「轮到自己」的动作；响应动作是四家并发的，
+	// 因此单独放一个字段（兼容期新增字段），非响应窗口时为 nil。
+	Responses []Action
 }
 
 // Observe 构造某个座位视角的观察结果（只含公开信息 + 自己的手牌）。
@@ -65,8 +69,13 @@ func (s *State) Observe(seat Seat) Observation {
 		obs.Melds[i] = cloneMelds(s.Melds[i])
 		obs.Discards[i] = cloneTiles(s.Discards[i])
 	}
-	// 只有轮到自己时才给合法动作；响应窗口在 M2 扩展。
-	if s.Turn == seat {
+	// 只有轮到自己时才给合法动作；响应窗口则给该座位的响应选项。
+	if s.Phase == PhaseAwaitResponse && s.Pending != nil {
+		obs.Responses = s.Responses(seat)
+		if len(obs.Responses) > 0 {
+			obs.LegalActions = obs.Responses
+		}
+	} else if s.Turn == seat {
 		obs.LegalActions = s.Legal()
 	}
 	return obs
