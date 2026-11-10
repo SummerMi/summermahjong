@@ -1,4 +1,4 @@
-# riichi — 日麻多智能体服务（v2）
+﻿# riichi — 日麻多智能体服务（v2）
 
 > 单人对三个 AI 打日麻（天凤式）；同时是「Go 后端 + Agent」的作品集项目。
 > 设计文档见 [`docs/riichi-架构与里程碑-20261110.md`](../docs/riichi-架构与里程碑-20261110.md)。
@@ -33,8 +33,14 @@ testdata/          金标牌谱与 fixture
 ## 当前状态（M0）
 
 - [x] `internal/tile`：34 种牌 + 赤宝牌编码/解析、确定性洗牌（SplitMix64 + Fisher-Yates）、牌山切分（活牌 122 / 王牌 14）、发牌、摸牌、岭上、宝牌指示牌推进
-- [x] 单测覆盖 88%（目标 90%+，M1 补齐）
-- [ ] rules / game / agent / eval / transport
+- [x] 单测覆盖 **100%**（含 SplitMix64 金标值、岭上/宝牌指示边界、非法输入）
+- [x] `internal/agent`：Agent 接口 + Random/FirstLegal 参考实现 + 合法性校验（覆盖 80%）
+- [x] `internal/store`：Store 接口 + Memory 实现 + 契约测试套件（覆盖 89.7%，sql/redis 复用同一套）
+- [x] `internal/game`：对局状态机骨架 + Observation 裁剪（含防泄露测试，覆盖 67.3%）
+- [ ] `internal/rules`（S3，进行中）/ `internal/eval` / `internal/transport`
+
+## 契约
+接口与事件/协议定义见 [`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md)（冻结 v1，改契约需 ADR）。
 
 ## 设计要点
 
@@ -60,7 +66,7 @@ cd riichi
 gofmt -l .          # 应为空
 go vet ./...
 go test ./... -count=1 -cover
-go test ./internal/tile -run . -bench .  # 后续补 bench
+go test ./internal/tile -run "^$" -bench . -benchmem
 ```
 
 Go 1.25+。

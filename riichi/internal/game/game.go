@@ -7,6 +7,7 @@
 package game
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -61,6 +62,16 @@ type ActionKind uint8
 const (
 	ActDraw ActionKind = iota
 	ActDiscard
+	ActChi
+	ActPon
+	ActKanDaiminkan
+	ActKanShouminkan
+	ActKanAnkan
+	ActRiichi
+	ActTsumo
+	ActRon
+	ActKyuushu
+	ActPass
 )
 
 // String 返回动作名。
@@ -70,6 +81,26 @@ func (k ActionKind) String() string {
 		return "draw"
 	case ActDiscard:
 		return "discard"
+	case ActChi:
+		return "chi"
+	case ActPon:
+		return "pon"
+	case ActKanDaiminkan:
+		return "kan_daiminkan"
+	case ActKanShouminkan:
+		return "kan_shouminkan"
+	case ActKanAnkan:
+		return "kan_ankan"
+	case ActRiichi:
+		return "riichi"
+	case ActTsumo:
+		return "tsumo"
+	case ActRon:
+		return "ron"
+	case ActKyuushu:
+		return "kyuushu"
+	case ActPass:
+		return "pass"
 	default:
 		return "?"
 	}
@@ -79,7 +110,12 @@ func (k ActionKind) String() string {
 type Action struct {
 	Kind ActionKind
 	Seat Seat
-	Tile tile.Tile // 仅 Discard 使用
+	Tile tile.Tile // 打牌/和了牌/被副露的牌
+
+	// Consumed 是副露消耗的手牌（吃 2 张、碰 2 张、杠 3 张）。
+	Consumed []tile.Tile
+	// Options 预留给后续规则（立直宣言、杠种类等）。
+	Options map[string]any
 }
 
 // EventKind 是事件类型。
@@ -93,12 +129,15 @@ const (
 )
 
 // Event 是一条不可变事件。
+//
+// 契约允许新增字段：M1 用 Tile/TileRed 便于测试断言；M2 起复杂事件写 Payload。
 type Event struct {
-	Seq     uint64    `json:"seq"`
-	Kind    EventKind `json:"kind"`
-	Seat    Seat      `json:"seat"`
-	Tile    string    `json:"tile,omitempty"`
-	TileRed bool      `json:"tile_red,omitempty"`
+	Seq     uint64          `json:"seq"`
+	Kind    EventKind       `json:"kind"`
+	Seat    Seat            `json:"seat"`
+	Tile    string          `json:"tile,omitempty"`
+	TileRed bool            `json:"tile_red,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // Ruleset 是对局规则配置。
@@ -118,6 +157,7 @@ type State struct {
 
 	Seed       int64
 	RoundWind  Wind
+	Kyoku      int // 第几局（东 1 局 = 1）
 	Honba      int // 本场
 	RiichiStix int // 场上立直棒
 
@@ -127,9 +167,12 @@ type State struct {
 
 	Wall     *tile.Wall
 	Hands    [4][]tile.Tile
+	Melds    [4][]Meld
 	Discards [4][]tile.Tile
 	Scores   [4]int
 	Drawn    *tile.Tile
+	Riichi   [4]bool
+	Furiten  [4]bool
 
 	Seq    uint64
 	Events []Event
@@ -205,7 +248,7 @@ func (s *State) Apply(a Action) error {
 		s.Drawn = &t
 		s.Hands[s.Turn] = append(s.Hands[s.Turn], t)
 		s.Phase = PhaseAwaitDiscard
-		s.emit(Event{Kind: EventDraw, Seat: s.Turn, Tile: t.String(), TileRed: t.Red})
+		s.emit(Event{Kind: EventDraw, Seat: s.Turn, Tile: t.String(), TileRed: t.Aka})
 		return nil
 
 	case ActDiscard:
@@ -226,7 +269,7 @@ func (s *State) Apply(a Action) error {
 		s.Hands[s.Turn] = append(hand[:idx:idx], hand[idx+1:]...)
 		s.Discards[s.Turn] = append(s.Discards[s.Turn], a.Tile)
 		s.Drawn = nil
-		s.emit(Event{Kind: EventDiscard, Seat: s.Turn, Tile: a.Tile.String(), TileRed: a.Tile.Red})
+		s.emit(Event{Kind: EventDiscard, Seat: s.Turn, Tile: a.Tile.String(), TileRed: a.Tile.Aka})
 		s.Turn = (s.Turn + 1) % 4
 		s.Phase = PhaseAwaitDraw
 		return nil

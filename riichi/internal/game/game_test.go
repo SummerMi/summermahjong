@@ -144,7 +144,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 		}
 	}
 	for i := range s1.Events {
-		if s1.Events[i] != s2.Events[i] {
+		if !eventsEqual(s1.Events[i], s2.Events[i]) {
 			t.Fatalf("event %d mismatch: %+v vs %+v", i, s1.Events[i], s2.Events[i])
 		}
 	}
@@ -191,4 +191,10 @@ func TestWallExhaustionEndsRound(t *testing.T) {
 	if s.Phase != PhaseRoundEnd {
 		t.Fatalf("phase=%v want RoundEnd", s.Phase)
 	}
+}
+
+// eventsEqual 比较两条事件（Event 含 json.RawMessage，不能用 ==）。
+func eventsEqual(a, b Event) bool {
+	return a.Seq == b.Seq && a.Kind == b.Kind && a.Seat == b.Seat &&
+		a.Tile == b.Tile && a.TileRed == b.TileRed && string(a.Payload) == string(b.Payload)
 }
