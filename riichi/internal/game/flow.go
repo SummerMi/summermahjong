@@ -454,6 +454,10 @@ func (s *State) openResponseWindow(from Seat, tl tile.Tile, kind PendingKind) er
 }
 
 // responseOptions 计算某座位对 tl 的全部可选响应（不含 pass）。
+//
+// 鸣牌（吃/碰/大明杠）必须做「打牌前瞻」：如果这次副露后玩家手里没有任何可打的牌
+// （例如 3 副露 + 4 张手牌，吃/碰后只剩 2 张且恰好全被食替禁则禁掉），
+// 那么该选项不能出现——否则 Apply 后 Legal() 为空，驱动方会直接卡死/aborted。
 func (s *State) responseOptions(seat, from Seat, tl tile.Tile, kind PendingKind) []Action {
 	options := make([]Action, 0, 4)
 	if s.canRon(seat, tl) {
@@ -468,33 +472,75 @@ func (s *State) responseOptions(seat, from Seat, tl tile.Tile, kind PendingKind)
 	}
 	// 大明杠与碰可以同时可选（手里 3 张时既可以杠也可以碰）
 	if s.countKind(seat, tl.Kind) >= 3 {
-		options = append(options, Action{
+		kanOption := Action{
 			Kind:     ActKanDaiminkan,
 			Seat:     seat,
 			Tile:     tl,
 			Consumed: s.takeKinds(seat, tl.Kind, 3),
-		})
+		}
+		if s.canCallThenDiscard(seat, kanOption, tl, MeldKanDaiminkan) {
+			options = append(options, kanOption)
+		}
 	}
 	if s.countKind(seat, tl.Kind) >= 2 {
-		options = append(options, Action{
+		ponOption := Action{
 			Kind:     ActPon,
 			Seat:     seat,
 			Tile:     tl,
 			Consumed: s.takeKinds(seat, tl.Kind, 2),
-		})
+		}
+		if s.canCallThenDiscard(seat, ponOption, tl, MeldPon) {
+			options = append(options, ponOption)
+		}
 	}
 	// 吃：只能吃上家
 	if seat == NextSeat(from) {
 		for _, consumed := range s.chiConsumedOptions(seat, tl) {
-			options = append(options, Action{
+			chiOption := Action{
 				Kind:     ActChi,
 				Seat:     seat,
 				Tile:     tl,
 				Consumed: consumed,
-			})
+			}
+			if s.canCallThenDiscard(seat, chiOption, tl, MeldChi) {
+				options = append(options, chiOption)
+			}
 		}
 	}
 	return options
+}
+
+// canCallThenDiscard 前瞻「执行这次副露后是否还有至少一张可打的牌」。
+//
+// 食替禁则（同种 + 筋）只影响吃/碰；大明杠之后会从岭上补一张（不产生食替限制），
+// 所以只要副露后手牌数 > 0 就一定还有牌可打（吃/碰后手牌数恒 ≥2，问题只在于是否全被禁）。
+func (s *State) canCallThenDiscard(seat Seat, action Action, called tile.Tile, meldKind MeldKind) bool {
+	consumedKinds := make([]tile.Kind, 0, len(action.Consumed))
+	for _, consumed := range action.Consumed {
+		consumedKinds = append(consumedKinds, consumed.Kind)
+	}
+	rest, ok := removeKinds(s.Hands[seat], consumedKinds...)
+	if !ok {
+		return false
+	}
+	if meldKind == MeldKanDaiminkan {
+		// 杠后摸岭上再打：手牌数 = len(rest)+1，理论上恒 > 0；保守要求 >= 1。
+		return len(rest)+1 >= 1
+	}
+	forbidden := kuikaeForbiddenKinds(meldKind, called.Kind)
+	for _, handTile := range rest {
+		allowed := true
+		for _, kind := range forbidden {
+			if handTile.Kind == kind {
+				allowed = false
+				break
+			}
+		}
+		if allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // applyResponse 处理响应窗口里的一个动作（ron / pon / kan / chi / pass）。
@@ -631,6 +677,18 @@ func (s *State) applyCallFromDiscard(pending *PendingResponses, caller Seat, act
 		return fmt.Errorf("%w: 牌河最后一张不是被鸣的牌", ErrIllegalAction)
 	}
 
+	meldKind := MeldChi
+	switch action.Kind {
+	case ActPon:
+		meldKind = MeldPon
+	case ActKanDaiminkan:
+		meldKind = MeldKanDaiminkan
+	}
+	// 前瞻：这次鸣牌后必须还有牌可打（否则会进入 Legal() 为空的死状态）
+	if !s.canCallThenDiscard(caller, action, pending.Tile, meldKind) {
+		return fmt.Errorf("%w: 该副露后无合法打牌（食替禁满）", ErrIllegalAction)
+	}
+
 	consumedKinds := make([]tile.Kind, 0, len(action.Consumed))
 	for _, consumed := range action.Consumed {
 		consumedKinds = append(consumedKinds, consumed.Kind)
@@ -642,13 +700,6 @@ func (s *State) applyCallFromDiscard(pending *PendingResponses, caller Seat, act
 	s.Hands[caller] = hand
 	s.Discards[from] = s.Discards[from][:len(s.Discards[from])-1]
 
-	meldKind := MeldChi
-	switch action.Kind {
-	case ActPon:
-		meldKind = MeldPon
-	case ActKanDaiminkan:
-		meldKind = MeldKanDaiminkan
-	}
 	tiles := append(append([]tile.Tile{}, action.Consumed...), riverTile)
 	sort.Slice(tiles, func(i, j int) bool { return tiles[i].Kind < tiles[j].Kind })
 	s.Melds[caller] = append(s.Melds[caller], Meld{Kind: meldKind, Tiles: tiles, From: from})
