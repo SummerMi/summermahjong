@@ -44,6 +44,7 @@ type roomSnapshot struct {
 // send / done 供多个 goroutine 使用；synced 与 lastSentSeq 只由房间 actor 读写。
 type client struct {
 	seat      game.Seat
+	spectator bool // 观战连接：只读，不接收响应选项、不能提交动作
 	send      chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
@@ -58,6 +59,15 @@ func newClient(seat game.Seat) *client {
 		seat: seat,
 		send: make(chan []byte, clientSendBuffer),
 		done: make(chan struct{}),
+	}
+}
+
+// newSpectatorClient 创建观战连接句柄（只读）。
+func newSpectatorClient() *client {
+	return &client{
+		spectator: true,
+		send:      make(chan []byte, clientSendBuffer),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -821,7 +831,16 @@ func (r *Room) refreshSnapshot() {
 
 // Attach 注册一个 WS 订阅者（不自动回放历史，由客户端 resume 触发补齐）。
 func (r *Room) Attach(ctx context.Context, seat game.Seat) (*client, error) {
-	c := newClient(seat)
+	return r.attach(ctx, newClient(seat))
+}
+
+// AttachSpectator 注册一个只读观战连接（不绑定座位，收全量事件流）。
+func (r *Room) AttachSpectator(ctx context.Context) (*client, error) {
+	return r.attach(ctx, newSpectatorClient())
+}
+
+// attach 把连接句柄交给房间 actor 注册。
+func (r *Room) attach(ctx context.Context, c *client) (*client, error) {
 	req := &attachRequest{client: c, done: make(chan struct{})}
 	select {
 	case r.attachCh <- req:
@@ -928,8 +947,8 @@ func (r *Room) handleResume(req *resumeRequest) {
 	req.client.sendMessage(resumedMessage{Type: "resumed", FromSeq: from, ToSeq: current})
 
 	// 断线重连时如果正处在响应窗口且该座位还没响应，补推一次 responses，
-	// 否则玩家会一直等到超时。
-	if r.st.Phase == game.PhaseAwaitResponse && r.st.Pending != nil && !r.st.Pending.Decided[req.client.seat] {
+	// 否则玩家会一直等到超时。观战连接不接收响应选项。
+	if !req.client.spectator && r.st.Phase == game.PhaseAwaitResponse && r.st.Pending != nil && !r.st.Pending.Decided[req.client.seat] {
 		r.pushResponsesTo(req.client)
 	}
 	req.reply <- nil

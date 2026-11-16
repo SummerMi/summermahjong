@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -316,6 +317,34 @@ func (s *Server) authenticate(r *http.Request) (game.Seat, error) {
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	gameID := r.PathValue("id")
 
+	// 观战连接：?spectator=1（或 seat=spectator），只读、无需令牌。
+	if isSpectatorRequest(r) {
+		room, ok := s.manager.Get(gameID)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, CodeGameNotFound, "对局不存在："+gameID)
+			return
+		}
+		conn, err := s.upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			s.logger.Warn("WS 观战升级失败", "game_id", gameID, "err", err)
+			return
+		}
+		client, err := room.AttachSpectator(r.Context())
+		if err != nil {
+			_ = conn.Close()
+			return
+		}
+		defer func() {
+			room.Detach(client)
+			_ = conn.Close()
+		}()
+		s.logger.Info("WS 观战连接建立", "game_id", gameID)
+		go s.writePump(conn, client)
+		s.readPump(conn, room, client)
+		s.logger.Info("WS 观战连接关闭", "game_id", gameID)
+		return
+	}
+
 	seatText := r.URL.Query().Get("seat")
 	seat, err := parseSeat(seatText)
 	if err != nil {
@@ -369,6 +398,16 @@ func parseSeat(text string) (game.Seat, error) {
 		return 0, fmt.Errorf("%w: seat %d", ErrInvalidRequest, value)
 	}
 	return game.Seat(value), nil
+}
+
+// isSpectatorRequest 判断 WS 请求是否是观战连接：
+// `?spectator=1`、`?spectator=true` 或 `?seat=spectator` 都视为观战。
+func isSpectatorRequest(r *http.Request) bool {
+	query := r.URL.Query()
+	if strings.EqualFold(query.Get("spectator"), "1") || strings.EqualFold(query.Get("spectator"), "true") {
+		return true
+	}
+	return strings.EqualFold(query.Get("seat"), "spectator")
 }
 
 // readPump 读取客户端消息直到连接关闭。
@@ -444,6 +483,10 @@ func (s *Server) handleClientMessage(room *Room, c *client, data []byte) {
 		}
 
 	case "action":
+		if c.spectator {
+			c.sendError(CodeIllegalAction, "观战连接只读，不能提交动作")
+			return
+		}
 		var msg actionMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			c.sendError(CodeValidation, "action 消息格式错误")

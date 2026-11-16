@@ -160,6 +160,28 @@ func wsURL(ts *httptest.Server, gameID string, seat game.Seat, token string) str
 		base, gameID, int(seat), url.QueryEscape(token))
 }
 
+// dialSpectatorWS 建立只读观战连接（?spectator=1，无需令牌）。
+func dialSpectatorWS(t *testing.T, ts *httptest.Server, gameID string) *websocket.Conn {
+	t.Helper()
+	base := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn, resp, err := websocket.DefaultDialer.Dial(
+		fmt.Sprintf("%s/api/v1/ws/games/%s?spectator=1", base, gameID), nil)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("观战 WS 连接失败 status=%d body=%s err=%v", resp.StatusCode, body, err)
+		}
+		t.Fatalf("观战 WS 连接失败: %v", err)
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	return conn
+}
+
 // dialWS 建立 WS 连接。
 func dialWS(t *testing.T, ts *httptest.Server, gameID string, seat game.Seat, token string) *websocket.Conn {
 	t.Helper()

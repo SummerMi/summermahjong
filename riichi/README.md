@@ -1,6 +1,6 @@
 # riichi — 日麻多智能体服务（v2）
 
-> 单人对三个 AI 打日麻（天鳳式）；同时是「Go 后端 + Agent」方向的作品集项目。
+> 单人对三个 AI 打日麻（天鳳式），支持只读观战；同时是「Go 后端 + Agent」方向的作品集项目。
 > 设计文档：[`docs/riichi-架构与里程碑-20261110.md`](../docs/riichi-架构与里程碑-20261110.md) ·
 > 接口契约：[`docs/riichi-接口契约-20261110.md`](../docs/riichi-接口契约-20261110.md) ·
 > 一页索引：[`docs/riichi-交付清单-20261110.md`](../docs/riichi-交付清单-20261110.md)
@@ -176,6 +176,13 @@ python web/serve.py --port 8098 --target http://127.0.0.1:8099
 ```
 
 页面能力与手动验收步骤见 [`web/README.md`](../web/README.md)（含断线重连补发、刷新续上的逐条预期）。
+
+观战：同一局可以开只读连接（无需 JWT、不接收 `responses`、提交动作回 `ILLEGAL_ACTION`），事件流与座位端逐条一致：
+
+```bash
+# ws://127.0.0.1:8099/api/v1/ws/games/{id}?spectator=1
+# 也可以写 ?seat=spectator；握手后先发 {"type":"resume","last_seq":0} 补齐历史
+```
 
 ## 设计要点
 
