@@ -39,6 +39,9 @@ func (a *DefenseAgent) Decide(ctx context.Context, obs game.Observation) (game.A
 	if err := ctx.Err(); err != nil {
 		return game.Action{}, err
 	}
+	if len(obs.Responses) > 0 {
+		return decideResponseAction(obs, a.style), nil
+	}
 	if len(obs.Hand) == 0 || len(candidateDiscards(obs)) == 0 {
 		return fallbackAction(obs)
 	}

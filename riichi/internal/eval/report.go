@@ -263,12 +263,12 @@ func (r Report) Markdown() string {
 			seat.Seat, seat.Agent, seat.Decisions,
 			formatRate(seat.WinRate), formatRate(seat.DealInRate),
 			formatMean(seat.AvgRank, 2), formatMean(seat.AvgWinPts, 0),
-			formatRate(seat.RiichiRate), formatRate(seat.MeldRate),
+			formatRate(seat.RiichiRate), formatCount(seat.MeldRate),
 			formatRate(seat.OpenWinRate),
 			seat.Decision.P50Ms, seat.Decision.P95Ms, seat.Yakuman)
 	}
 	writeLine("")
-	writeLine("> 和了率/放铳率/立直率/副露率括号内为 95%% 置信区间；平均顺位 1 最好、4 最差。")
+	writeLine("> 和了率/放铳率/立直率/副露和了占比括号内为 95%% 置信区间；副露/轮是计数型指标（无 CI）。平均顺位 1 最好、4 最差。")
 	writeLine("")
 	writeLine("## 3. ELO（Bradley-Terry）")
 	writeLine("")
@@ -312,16 +312,24 @@ func shortHash(hash string) string {
 
 // formatRate 渲染比例与置信区间（如 "24.3% [18.1, 31.9]"）。
 //
-// 计数型指标（value > 1，例如每轮副露次数）没有二项置信区间，直接显示为「N 次/轮」；
+// 计数型指标（如每轮副露次数）没有二项置信区间，用 formatCount 单独渲染；
 // 无样本时显示 "—"（JSON 里对应 null）。
 func formatRate(rate Rate) string {
 	if !rate.HasData() {
 		return "—"
 	}
-	if rate.Value < 0 || rate.Value > 1 {
-		return fmt.Sprintf("%.2f 次/轮", rate.Value)
-	}
 	return fmt.Sprintf("%.1f%% [%.1f, %.1f]", 100*rate.Value, 100*rate.Low, 100*rate.High)
+}
+
+// formatCount 渲染计数型指标（如每轮副露次数）。
+//
+// 副露率可能小于 1（每轮不足一次），不能走 formatRate 的百分比分支，
+// 否则会显示成「94.2%」这种错误口径。
+func formatCount(rate Rate) string {
+	if !rate.HasData() {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f 次/轮", rate.Value)
 }
 
 // formatMean 渲染均值与置信区间。
