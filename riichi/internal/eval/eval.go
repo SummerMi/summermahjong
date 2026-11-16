@@ -65,6 +65,9 @@ type Config struct {
 	Calls CallsPolicy
 	// Scorer 是计分实现；nil 时用 RulesScorer{}。
 	Scorer game.ScoreProvider
+	// AgentBuilder 可选：按名字构造 Agent（例如 LLM 策略）；nil 时用 agent.New。
+	// 设置时 withDefaults 不再用 agent.New 校验名字，由 Builder 自己报错。
+	AgentBuilder func(name string, seed int64) (agent.Agent, error)
 }
 
 // withDefaults 补齐零值并校验。
@@ -76,6 +79,11 @@ func (c Config) withDefaults() (Config, error) {
 		return c, fmt.Errorf("eval: agents 必须恰好 4 个，实际 %d 个", len(c.Agents))
 	}
 	for seat, name := range c.Agents {
+		if c.AgentBuilder != nil {
+			// 自定义 Builder（如 LLM 策略）自己负责校验名字；这里不预构造，
+			// 避免构造副作用（例如 LLM Agent 的客户端/统计）。
+			continue
+		}
 		if _, err := agent.New(name, agent.Options{}); err != nil {
 			return c, fmt.Errorf("eval: 座位 %d 的 agent %q 无效: %w", seat, name, err)
 		}
@@ -225,8 +233,14 @@ func playGame(cfg Config, seed int64) GameResult {
 	started := time.Now()
 
 	agents := make([]agent.Agent, 4)
+	build := func(name string, seed int64) (agent.Agent, error) {
+		if cfg.AgentBuilder != nil {
+			return cfg.AgentBuilder(name, seed)
+		}
+		return agent.New(name, agent.Options{Seed: seed})
+	}
 	for seat, name := range cfg.Agents {
-		a, err := agent.New(name, agent.Options{Seed: seed*4 + int64(seat)})
+		a, err := build(name, seed*4+int64(seat))
 		if err != nil {
 			res.Error = fmt.Sprintf("构造 agent 座位 %d（%s）失败: %v", seat, name, err)
 			res.DurationMs = float64(time.Since(started).Microseconds()) / 1000

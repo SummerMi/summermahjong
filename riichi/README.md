@@ -114,6 +114,16 @@ go run ./cmd/riichi-eval --count 20 --calls agent --out .tmp-eval
 cat .tmp-eval/report.md          # 人读表格；report.json 机器读；manifest.json 记 git sha / 配置 hash
 ```
 
+LLM 座位（需 OpenAI 兼容 key；没有 key 时用 `-llm-mock` 只验证链路）：
+
+```bash
+go run ./cmd/riichi-eval --count 10 --calls=agent --timeout 5s \
+  --agents llm,shanten:attack,defense:defense,search:closed \
+  --llm-base-url "$LLM_BASE_URL" --llm-model "$LLM_MODEL" --llm-api-key "$LLM_API_KEY" \
+  --out .tmp/llm-real
+# 无 key 验证链路：加 -llm-mock（走 MockClient，不联网）
+```
+
 预期（20 场口径的**历史记录摘录**，完整列见 `.tmp-eval/report.md`）：
 
 ```

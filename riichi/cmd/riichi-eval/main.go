@@ -23,8 +23,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"summermahjong/riichi/internal/agent"
+	"summermahjong/riichi/internal/agent/llm"
 	"summermahjong/riichi/internal/eval"
 	"summermahjong/riichi/internal/game"
 )
@@ -48,6 +51,13 @@ func run() error {
 		calls       = flag.String("calls", string(eval.CallsPass), "响应窗口策略：pass（只荣和，默认；S5 副露后打牌未接通）/ agent（全部交给 agent，会产生 aborted）")
 		redFives    = flag.Int("red-fives", 3, "赤宝牌数量 0-3")
 		startPoints = flag.Int("starting-points", 25000, "起始点数")
+
+		llmMock    = flag.Bool("llm-mock", false, "llm 座位用 MockClient（不联网，只验证评测链路）")
+		llmBaseURL = flag.String("llm-base-url", "", "OpenAI 兼容 base URL（缺省读 LLM_BASE_URL/OPENAI_BASE_URL）")
+		llmModel   = flag.String("llm-model", "", "模型名（缺省读 LLM_MODEL/OPENAI_MODEL）")
+		llmAPIKey  = flag.String("llm-api-key", "", "API key（缺省读 LLM_API_KEY/OPENAI_API_KEY）")
+		llmTimeout = flag.Duration("llm-timeout", 2*time.Second, "单次 LLM 调用超时")
+		llmTopK    = flag.Int("llm-topk", 5, "交给 LLM 的候选数")
 	)
 	flag.Parse()
 
@@ -60,6 +70,42 @@ func run() error {
 		return fmt.Errorf("--agents 必须恰好 4 个（当前 %d 个: %v）", len(agents), agents)
 	}
 
+	var (
+		llmAgents []*llm.Agent
+		llmMu     sync.Mutex
+	)
+	builder := func(name string, seed int64) (agent.Agent, error) {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "llm") {
+			return agent.New(name, agent.Options{Seed: seed})
+		}
+		var client llm.Client
+		if *llmMock {
+			client = &llm.MockClient{}
+		} else {
+			key := *llmAPIKey
+			if key == "" {
+				key = firstEnv("LLM_API_KEY", "OPENAI_API_KEY")
+			}
+			if key == "" {
+				return nil, fmt.Errorf("llm: 缺少 API key（-llm-api-key / LLM_API_KEY / OPENAI_API_KEY）；可先用 -llm-mock 验证链路")
+			}
+			base := *llmBaseURL
+			if base == "" {
+				base = firstEnv("LLM_BASE_URL", "OPENAI_BASE_URL")
+			}
+			model := *llmModel
+			if model == "" {
+				model = firstEnv("LLM_MODEL", "OPENAI_MODEL")
+			}
+			client = llm.NewOpenAICompatClient(base, key, model)
+		}
+		instance := llm.New(client, llm.WithTimeout(*llmTimeout), llm.WithTopK(*llmTopK))
+		llmMu.Lock()
+		llmAgents = append(llmAgents, instance)
+		llmMu.Unlock()
+		return instance, nil
+	}
+
 	cfg := eval.Config{
 		Seeds:           seeds,
 		Agents:          agents,
@@ -68,6 +114,7 @@ func run() error {
 		DecisionTimeout: *timeout,
 		Jobs:            *jobs,
 		Calls:           eval.CallsPolicy(*calls),
+		AgentBuilder:    builder,
 	}
 	cfg.Rules.RedFives = *redFives
 	cfg.Rules.StartingPoints = *startPoints
@@ -86,6 +133,21 @@ func run() error {
 		return err
 	}
 	printSummary(report, *outDir)
+	if len(llmAgents) > 0 {
+		var total llm.Stats
+		for _, a := range llmAgents {
+			st := a.Stats()
+			total.Calls += st.Calls
+			total.Fallbacks += st.Fallbacks
+			total.Invalid += st.Invalid
+			total.Errors += st.Errors
+			total.PromptTokens += st.PromptTokens
+			total.CompletionTokens += st.CompletionTokens
+		}
+		fmt.Printf("LLM 统计：agents=%d model=%s calls=%d fallbacks=%d errors=%d invalid=%d prompt_tokens=%d completion_tokens=%d\n",
+			len(llmAgents), llmAgents[0].Model(), total.Calls, total.Fallbacks, total.Errors,
+			total.Invalid, total.PromptTokens, total.CompletionTokens)
+	}
 
 	if result.Errors == len(result.Games) && len(result.Games) > 0 {
 		return fmt.Errorf("全部 %d 场对局都失败了，请检查上面的错误信息", result.Errors)
@@ -209,4 +271,14 @@ func formatMean(stat eval.MeanCI) string {
 		return "—"
 	}
 	return fmt.Sprintf("%.2f [%.2f,%.2f]", stat.Mean, stat.Low, stat.High)
+}
+
+// firstEnv 返回第一个非空环境变量（供 LLM 配置缺省值）。
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
 }
