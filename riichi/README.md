@@ -210,6 +210,24 @@ go run ./cmd/riichi-server -addr :8100 -jwt-secret dev -redis-url "$RIICHI_REDIS
 
 > 当前跨实例只支持**只读观战**；座位动作（打牌/响应）必须发到房间 owner 实例。owner 注册表与动作转发是下一步。
 
+### 5）部署 demo（Docker + Nginx）
+
+`riichi/deploy/` 里是可直接用的部署件：
+
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | 多阶段构建（Go 1.25 → alpine），非 root 用户、healthcheck |
+| `docker-compose.yml` | server + Redis（事件存储与跨实例广播都用 Redis） |
+| `nginx.conf` | WebSocket 升级头、建局限流、`/metrics` 只对内网 |
+
+```bash
+export RIICHI_JWT_SECRET=$(openssl rand -hex 32)
+docker compose -f riichi/deploy/docker-compose.yml up -d --build
+curl http://127.0.0.1:8099/healthz
+```
+
+> 本机 Docker daemon 当前未启动，镜像构建未实跑；`go build` 与 compose 配置解析已校验。WS 压测（100 并发 p99）下一轮补。
+
 ## 设计要点
 
 **事件溯源**：`状态 = fold(events)`，每个事件带单调 `seq`，牌山由 seed 决定。回放、断线续传、评测复现由同一机制解决；`Replay(seed, actions)` 与实时状态逐字段一致有测试。
