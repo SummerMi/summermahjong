@@ -44,11 +44,20 @@ type Config struct {
 	AutoAdvanceRounds *bool
 	// Store 是事件存储，nil 表示使用内存实现（测试 / 单机 demo）。
 	Store store.Store
+	// Bus 是跨实例广播通道，nil 表示进程内内存总线（单实例）。
+	Bus Bus
 	// Logger 是结构化日志，nil 表示 slog.Default()。
 	Logger *slog.Logger
 
 	// CORSOrigin 是允许的跨域来源；空串表示不启用（demo 传 "*"，生产传白名单域名）。
 	CORSOrigin string
+}
+
+// wsSession 是 WS 连接挂载的会话：本实例的 Room，或跨实例的只读 mirror。
+type wsSession interface {
+	Resume(ctx context.Context, c *client, lastSeq uint64) error
+	Detach(c *client)
+	SubmitAction(ctx context.Context, seat game.Seat, action game.Action, actionID string, seq uint64) error
 }
 
 // Server 是对局服务：HTTP + WebSocket。
@@ -81,6 +90,7 @@ func New(cfg Config) (*Server, error) {
 		AutoAdvanceRounds: cfg.AutoAdvanceRounds,
 		Logger:            cfg.Logger,
 		Metrics:           m,
+		Bus:               cfg.Bus,
 	})
 	return &Server{
 		cfg:     cfg,
@@ -319,8 +329,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// 观战连接：?spectator=1（或 seat=spectator），只读、无需令牌。
 	if isSpectatorRequest(r) {
-		room, ok := s.manager.Get(gameID)
-		if !ok {
+		if !s.manager.HasGame(r.Context(), gameID) {
 			writeAPIError(w, http.StatusNotFound, CodeGameNotFound, "对局不存在："+gameID)
 			return
 		}
@@ -329,18 +338,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("WS 观战升级失败", "game_id", gameID, "err", err)
 			return
 		}
-		client, err := room.AttachSpectator(r.Context())
+		session, client, err := s.manager.AttachSpectator(r.Context(), gameID)
 		if err != nil {
 			_ = conn.Close()
 			return
 		}
 		defer func() {
-			room.Detach(client)
+			session.Detach(client)
 			_ = conn.Close()
 		}()
 		s.logger.Info("WS 观战连接建立", "game_id", gameID)
 		go s.writePump(conn, client)
-		s.readPump(conn, room, client)
+		s.readPump(conn, session, client)
 		s.logger.Info("WS 观战连接关闭", "game_id", gameID)
 		return
 	}
@@ -377,14 +386,15 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
+	var session wsSession = room
 	defer func() {
-		room.Detach(client)
+		session.Detach(client)
 		_ = conn.Close()
 	}()
 
 	s.logger.Info("WS 连接建立", "game_id", gameID, "seat", seat)
 	go s.writePump(conn, client)
-	s.readPump(conn, room, client)
+	s.readPump(conn, session, client)
 	s.logger.Info("WS 连接关闭", "game_id", gameID, "seat", seat)
 }
 
@@ -411,7 +421,7 @@ func isSpectatorRequest(r *http.Request) bool {
 }
 
 // readPump 读取客户端消息直到连接关闭。
-func (s *Server) readPump(conn *websocket.Conn, room *Room, c *client) {
+func (s *Server) readPump(conn *websocket.Conn, session wsSession, c *client) {
 	conn.SetReadLimit(wsReadLimit)
 	_ = conn.SetReadDeadline(time.Now().Add(wsIdleTimeout))
 	conn.SetPongHandler(func(string) error {
@@ -423,7 +433,7 @@ func (s *Server) readPump(conn *websocket.Conn, room *Room, c *client) {
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(wsIdleTimeout))
-		s.handleClientMessage(room, c, data)
+		s.handleClientMessage(session, c, data)
 	}
 }
 
@@ -456,7 +466,7 @@ func (s *Server) writePump(conn *websocket.Conn, c *client) {
 }
 
 // handleClientMessage 分发一条客户端协议消息。
-func (s *Server) handleClientMessage(room *Room, c *client, data []byte) {
+func (s *Server) handleClientMessage(session wsSession, c *client, data []byte) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		c.sendError(CodeValidation, "消息必须是合法 JSON")
@@ -478,7 +488,7 @@ func (s *Server) handleClientMessage(room *Room, c *client, data []byte) {
 			c.sendError(CodeValidation, "resume 消息格式错误")
 			return
 		}
-		if err := room.Resume(context.Background(), c, msg.LastSeq); err != nil {
+		if err := session.Resume(context.Background(), c, msg.LastSeq); err != nil {
 			c.sendError(errorCodeFor(err), err.Error())
 		}
 
@@ -497,7 +507,7 @@ func (s *Server) handleClientMessage(room *Room, c *client, data []byte) {
 			c.sendError(errorCodeFor(err), err.Error())
 			return
 		}
-		if err := room.SubmitAction(context.Background(), c.seat, action, msg.ActionID, msg.Seq); err != nil {
+		if err := session.SubmitAction(context.Background(), c.seat, action, msg.ActionID, msg.Seq); err != nil {
 			c.sendError(errorCodeFor(err), err.Error())
 		}
 

@@ -50,6 +50,8 @@ type ManagerConfig struct {
 	AutoAdvanceRounds *bool
 	Logger            *slog.Logger
 	Metrics           *metrics
+	// Bus 是跨实例广播通道；nil 表示进程内内存总线（单实例）。
+	Bus Bus
 }
 
 // Manager 管理所有对局房间（单进程内存）。
@@ -57,10 +59,15 @@ type Manager struct {
 	mu      sync.RWMutex
 	rooms   map[string]*Room
 	store   store.Store
+	bus     Bus
 	cfg     ManagerConfig
 	metrics *metrics
 	logger  *slog.Logger
 	closed  atomic.Bool
+
+	// mirrors 是非本实例房间的只读镜像（跨实例观战）。
+	mirrorMu sync.Mutex
+	mirrors  map[string]*mirror
 }
 
 // NewManager 构造房间管理器；Store 为空时使用内存实现。
@@ -71,12 +78,17 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if cfg.Metrics == nil {
 		cfg.Metrics = newMetrics()
 	}
+	if cfg.Bus == nil {
+		cfg.Bus = NewMemoryBus()
+	}
 	return &Manager{
 		rooms:   make(map[string]*Room),
 		store:   newSyncStore(cfg.Store),
+		bus:     cfg.Bus,
 		cfg:     cfg,
 		metrics: cfg.Metrics,
 		logger:  cfg.Logger,
+		mirrors: make(map[string]*mirror),
 	}
 }
 
@@ -134,6 +146,8 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Room, error) {
 		autoAdvanceRounds: m.cfg.AutoAdvanceRounds == nil || *m.cfg.AutoAdvanceRounds,
 		logger:            m.logger,
 		metrics:           m.metrics,
+		bus:               m.bus,
+		channel:           roomChannel(id),
 	}
 	room := newRoom(id, st, meta, roomCfg)
 	if err := room.persistInitial(ctx); err != nil {
@@ -156,6 +170,55 @@ func (m *Manager) Get(id string) (*Room, bool) {
 	defer m.mu.RUnlock()
 	room, ok := m.rooms[id]
 	return room, ok
+}
+
+// HasGame 报告对局是否存在：本实例房间或共享 store 里的元数据。
+func (m *Manager) HasGame(ctx context.Context, id string) bool {
+	if _, ok := m.Get(id); ok {
+		return true
+	}
+	_, err := m.store.GetMeta(ctx, id)
+	return err == nil
+}
+
+// AttachSpectator 为观战连接选择会话：
+//   - 本实例托管的房间 → 直接挂 Room；
+//   - 其它实例的房间 → 建立只读镜像（订阅跨实例总线）。
+func (m *Manager) AttachSpectator(ctx context.Context, id string) (wsSession, *client, error) {
+	if room, ok := m.Get(id); ok {
+		c, err := room.AttachSpectator(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return room, c, nil
+	}
+	mir, err := m.mirrorFor(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	c := newSpectatorClient()
+	mir.add(c)
+	return mir, c, nil
+}
+
+// mirrorFor 取或创建某对局的远端镜像。
+func (m *Manager) mirrorFor(ctx context.Context, id string) (*mirror, error) {
+	m.mirrorMu.Lock()
+	defer m.mirrorMu.Unlock()
+	if mir, ok := m.mirrors[id]; ok {
+		return mir, nil
+	}
+	// 先确认对局存在（共享 store 里必须有元数据）。
+	if _, err := m.store.GetMeta(ctx, id); err != nil {
+		return nil, err
+	}
+	mir, err := newMirror(ctx, id, m.store, m.bus)
+	if err != nil {
+		return nil, err
+	}
+	m.mirrors[id] = mir
+	m.logger.Info("建立跨实例观战镜像", "game_id", id, "channel", mir.channel)
+	return mir, nil
 }
 
 // ActiveCount 返回当前保留的对局数。
@@ -183,6 +246,12 @@ func (m *Manager) Close() {
 		m.metrics.gamesActive.Add(-1)
 		m.metrics.gamesClosed.Add(1)
 	}
+	m.mirrorMu.Lock()
+	for id, mir := range m.mirrors {
+		mir.cancel()
+		delete(m.mirrors, id)
+	}
+	m.mirrorMu.Unlock()
 }
 
 // resolveAgents 把策略名解析为 Agent 实例；nil 表示人类座位。

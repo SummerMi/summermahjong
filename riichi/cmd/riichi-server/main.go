@@ -24,7 +24,10 @@ import (
 	"time"
 
 	"summermahjong/riichi/internal/game"
+	redisstore "summermahjong/riichi/internal/store/redis"
 	"summermahjong/riichi/internal/transport"
+
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // devJWTSecret 是未显式配置密钥时的开发默认值（仅本机 demo，生产必须覆盖）。
@@ -37,6 +40,8 @@ func main() {
 	issueToken := flag.Int("issue-token", -1, "只签发指定座位的 JWT（0-3）并退出")
 	tokenTTL := flag.Duration("token-ttl", 2*time.Hour, "签发令牌的有效期")
 	corsOrigin := flag.String("cors", "*", "CORS 允许来源（demo 默认 *；空串关闭）")
+	redisURL := flag.String("redis-url", os.Getenv("RIICHI_REDIS_URL"),
+		"Redis 地址（多实例：共享事件存储 + 跨实例广播；留空 = 单实例内存）")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -50,15 +55,34 @@ func main() {
 		logger.Warn("未配置 JWT 密钥，使用开发默认值（生产请设置 RIICHI_JWT_SECRET）")
 		*secret = devJWTSecret
 	}
-	server, err := transport.New(transport.Config{
+	cfg := transport.Config{
 		JWTSecret:    []byte(*secret),
 		AgentTimeout: *agentTimeout,
 		Logger:       logger,
 		CORSOrigin:   *corsOrigin,
-	})
+	}
+	var redisClient *goredis.Client
+	if *redisURL != "" {
+		opt, err := goredis.ParseURL(*redisURL)
+		if err != nil {
+			logger.Error("解析 redis-url 失败", "err", err)
+			os.Exit(1)
+		}
+		redisClient = goredis.NewClient(opt)
+		// 多实例必须共享事件存储（观战镜像靠它回放历史）与广播频道。
+		cfg.Store = redisstore.New(redisClient)
+		cfg.Bus = transport.NewRedisBus(redisClient)
+		if err := redisClient.Ping(context.Background()).Err(); err != nil {
+			logger.Warn("Redis 连接失败（多实例功能不可用）", "err", err)
+		}
+	}
+	server, err := transport.New(cfg)
 	if err != nil {
 		logger.Error("初始化服务失败", "err", err)
 		os.Exit(1)
+	}
+	if redisClient != nil {
+		defer func() { _ = redisClient.Close() }()
 	}
 
 	httpServer := &http.Server{

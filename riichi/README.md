@@ -184,6 +184,22 @@ python web/serve.py --port 8098 --target http://127.0.0.1:8099
 # 也可以写 ?seat=spectator；握手后先发 {"type":"resume","last_seq":0} 补齐历史
 ```
 
+多实例观战（跨实例镜像）：两个进程共用同一个 Redis（事件存储 + 广播频道），对局建在 A、观战端连 B：
+
+```bash
+export RIICHI_REDIS_URL=redis://127.0.0.1:6379/0
+# 实例 A
+go run ./cmd/riichi-server -addr :8099 -jwt-secret dev -redis-url "$RIICHI_REDIS_URL"
+# 实例 B（另一个终端）
+go run ./cmd/riichi-server -addr :8100 -jwt-secret dev -redis-url "$RIICHI_REDIS_URL"
+
+# 观战端连 B 也能看 A 上的对局：
+# ws://127.0.0.1:8100/api/v1/ws/games/{id}?spectator=1
+# B 订阅 riichi:room:<id>，先从共享 store 回放历史，再转发实时帧（按 seq 去重）
+```
+
+> 当前跨实例只支持**只读观战**；座位动作（打牌/响应）必须发到房间 owner 实例。owner 注册表与动作转发是下一步。
+
 ## 设计要点
 
 **事件溯源**：`状态 = fold(events)`，每个事件带单调 `seq`，牌山由 seed 决定。回放、断线续传、评测复现由同一机制解决；`Replay(seed, actions)` 与实时状态逐字段一致有测试。

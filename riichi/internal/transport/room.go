@@ -155,6 +155,9 @@ type roomConfig struct {
 	autoAdvanceRounds bool
 	logger            *slog.Logger
 	metrics           *metrics // 可为 nil（单测直接建房间时）
+	// bus/channel 用于跨实例广播（bus 为 nil 时只做本地广播）。
+	bus     Bus
+	channel string
 }
 
 // Room 是一局对局的 actor：单 goroutine 串行执行「Apply → 落库 → 广播 → AI 驱动」。
@@ -692,7 +695,8 @@ func (r *Room) afterApply(seqBefore uint64, tsumogiri bool) {
 	}
 }
 
-// publishJSON 把一条非事件消息广播给所有已 resume 的连接（慢连接摘除）。
+// publishJSON 把一条非事件消息广播给所有已 resume 的连接（慢连接摘除），
+// 同时发布到跨实例总线（远端观战镜像依赖它拿到 agent_thought 等消息）。
 func (r *Room) publishJSON(msg any) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -711,6 +715,7 @@ func (r *Room) publishJSON(msg any) {
 			r.dropClient(c)
 		}
 	}
+	r.publishBus(data)
 }
 
 // publishAgentThought 广播一条 AI 决策信息（agent_thought）。
@@ -773,6 +778,7 @@ func (r *Room) persist(events []game.Event) {
 }
 
 // publish 把事件广播给所有已完成 resume 的连接；慢连接直接摘除。
+// 同时发布到跨实例总线（跨实例观战镜像靠它拿实时帧）。
 func (r *Room) publish(events []game.Event) {
 	if len(events) == 0 {
 		return
@@ -785,9 +791,6 @@ func (r *Room) publish(events []game.Event) {
 		}
 	}
 	r.subsMu.Unlock()
-	if len(targets) == 0 {
-		return
-	}
 
 	for _, ev := range events {
 		data, err := marshalEvent(ev)
@@ -804,6 +807,17 @@ func (r *Room) publish(events []game.Event) {
 			}
 			c.lastSentSeq = ev.Seq
 		}
+		r.publishBus(data)
+	}
+}
+
+// publishBus 把一帧发布到跨实例总线；单实例（nil bus）时是空操作。
+func (r *Room) publishBus(data []byte) {
+	if r.cfg.bus == nil || r.cfg.channel == "" {
+		return
+	}
+	if err := r.cfg.bus.Publish(r.ctx, r.cfg.channel, data); err != nil {
+		r.cfg.logger.Warn("跨实例广播失败", "game_id", r.id, "err", err)
 	}
 }
 
