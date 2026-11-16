@@ -236,11 +236,14 @@ func (s *State) legalDiscardActions(seat Seat) []Action {
 	if s.canTsumo(seat) {
 		acts = append(acts, Action{Kind: ActTsumo, Seat: seat, Tile: *s.Drawn})
 	}
-	for _, kind := range s.ankanKinds(seat) {
-		acts = append(acts, Action{Kind: ActKanAnkan, Seat: seat, Tile: tile.Tile{Kind: kind}})
-	}
-	for _, kind := range s.shouminkanKinds(seat) {
-		acts = append(acts, Action{Kind: ActKanShouminkan, Seat: seat, Tile: tile.Tile{Kind: kind}})
+	// 暗杠/加杠必须发生在「自己摸牌后」；吃/碰之后 Drawn == nil，只能打牌。
+	if s.Drawn != nil {
+		for _, kind := range s.ankanKinds(seat) {
+			acts = append(acts, Action{Kind: ActKanAnkan, Seat: seat, Tile: tile.Tile{Kind: kind}})
+		}
+		for _, kind := range s.shouminkanKinds(seat) {
+			acts = append(acts, Action{Kind: ActKanShouminkan, Seat: seat, Tile: tile.Tile{Kind: kind}})
+		}
 	}
 	if s.canKyuushu(seat) {
 		acts = append(acts, Action{Kind: ActKyuushu, Seat: seat})

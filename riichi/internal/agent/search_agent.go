@@ -80,5 +80,5 @@ func (a *SearchAgent) Decide(ctx context.Context, obs game.Observation) (game.Ac
 	if !found {
 		return fallbackAction(obs)
 	}
-	return game.Action{Kind: game.ActDiscard, Seat: obs.Seat, Tile: best.Tile}, nil
+	return maybeRiichi(obs, best.Tile), nil
 }

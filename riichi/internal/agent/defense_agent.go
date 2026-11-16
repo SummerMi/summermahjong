@@ -52,6 +52,7 @@ func (a *DefenseAgent) Decide(ctx context.Context, obs game.Observation) (game.A
 
 	if hasRiichiOpponent(obs) {
 		// 立直宣言后：安全第一。危险度相同时再比向听，最后比进张与牌价值。
+		// 有人立直时不主动立直（不把已经固定的手牌锁死在危险局面上）。
 		best := evals[0]
 		for _, ev := range evals[1:] {
 			if lessDangerFirst(ev, best) {
@@ -72,7 +73,7 @@ func (a *DefenseAgent) Decide(ctx context.Context, obs game.Observation) (game.A
 	if !ok {
 		return fallbackAction(obs)
 	}
-	return game.Action{Kind: game.ActDiscard, Seat: obs.Seat, Tile: best.Tile}, nil
+	return maybeRiichi(obs, best.Tile), nil
 }
 
 // lessDangerFirst 是「守備」的字典序比较：

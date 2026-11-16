@@ -54,7 +54,7 @@ func (a *ShantenAgent) Decide(ctx context.Context, obs game.Observation) (game.A
 	if !ok {
 		return fallbackAction(obs)
 	}
-	return game.Action{Kind: game.ActDiscard, Seat: obs.Seat, Tile: best.Tile}, nil
+	return maybeRiichi(obs, best.Tile), nil
 }
 
 // normalizeStyle 把零值 Style 替换成默认打风，避免调用方漏传时权重全为 0。

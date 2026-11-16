@@ -2,6 +2,8 @@ package game
 
 import (
 	"testing"
+
+	"summermahjong/riichi/internal/tile"
 )
 
 // ── 食替口径可配（2026-11-16）──────────────────────────────────
@@ -139,5 +141,24 @@ func TestRiichiAnkanNotOfferedWhenWaitsChange(t *testing.T) {
 		if action.Kind == ActKanAnkan {
 			t.Fatalf("改变听牌的暗杠不应出现在 Legal(): %+v", action)
 		}
+	}
+}
+
+// TestNoKanAfterCall 吃/碰之后（Drawn == nil）不应提供暗杠/加杠（只能打牌）。
+func TestNoKanAfterCall(t *testing.T) {
+	s := mustState(t, 42)
+	s.Melds[0] = []Meld{{Kind: MeldPon, Tiles: []tile.Tile{{Kind: tile.Pin5}, {Kind: tile.Pin5}, {Kind: tile.Pin5}}, From: 1}}
+	s.Hands[0] = mustHand(t, "5p5p5p5p 1m2m3m 4m5m6m 7m")
+	s.Drawn = nil
+	s.Phase = PhaseAwaitDiscard
+	s.Turn = 0
+	for _, action := range s.Legal() {
+		if action.Kind == ActKanAnkan || action.Kind == ActKanShouminkan {
+			t.Fatalf("鸣牌后 Drawn==nil，不应提供杠动作: %+v", action)
+		}
+	}
+	// 直接提交也应被拒绝，而不是卡在非法状态。
+	if err := s.Apply(Action{Kind: ActKanShouminkan, Seat: 0, Tile: mustTile(t, "5p")}); err == nil {
+		t.Fatal("鸣牌后的加杠应被拒绝")
 	}
 }
