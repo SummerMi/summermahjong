@@ -102,21 +102,37 @@ func TestGoldenHands(t *testing.T) {
 			wantChild: 6000, wantDealer: 12000, wantTotal: 24000,
 		},
 		{
-			name: "国士无双（子，32000）", hand: "19m 19p 19s 1234567z 1m", winning: "1m", ctx: child,
+			name: "国士十三面（子，双倍 64000）", hand: "19m 19p 19s 1234567z 1m", winning: "1m", ctx: child,
+			wantYaku: []string{YakuKokushi}, wantHan: 26, wantFu: 25, wantRon: 64000, wantTotal: 64000,
+		},
+		{
+			name: "国士十三面（亲，双倍 96000）", hand: "19m 19p 19s 1234567z 1m", winning: "1m", ctx: dealer,
+			wantYaku: []string{YakuKokushi}, wantHan: 26, wantFu: 25, wantRon: 96000, wantTotal: 96000,
+		},
+		{
+			name: "四暗刻单骑（子，双倍 64000）", hand: "111m 222p 333s 444z 55m", winning: "5m", ctx: child,
+			wantYaku: []string{YakuSuuankou}, wantHan: 26, wantFu: -1, wantRon: 64000, wantTotal: 64000,
+		},
+		{
+			name: "四暗刻单骑 自摸（亲，32000 all = 96000）", hand: "111m 222p 333s 444z 55m", winning: "5m",
+			ctx: dealerTsumo, wantYaku: []string{YakuSuuankou}, wantHan: 26, wantFu: -1,
+			wantChild: 32000, wantDealer: 32000, wantTotal: 96000,
+		},
+		{
+			name: "国士单面（子，单倍 32000）", hand: "19m 19p 19s 123456z 1m 7z", winning: "7z", ctx: child,
 			wantYaku: []string{YakuKokushi}, wantHan: 13, wantFu: 25, wantRon: 32000, wantTotal: 32000,
 		},
 		{
-			name: "国士无双（亲，48000）", hand: "19m 19p 19s 1234567z 1m", winning: "1m", ctx: dealer,
-			wantYaku: []string{YakuKokushi}, wantHan: 13, wantFu: 25, wantRon: 48000, wantTotal: 48000,
+			name: "九莲宝灯 单面（子，单倍 32000）", hand: "11122345678999m", winning: "9m", ctx: child,
+			wantYaku: []string{YakuChuuren}, wantHan: 13, wantFu: -1, wantRon: 32000, wantTotal: 32000,
 		},
 		{
-			name: "四暗刻（子，32000）", hand: "111m 222p 333s 444z 55m", winning: "5m", ctx: child,
-			wantYaku: []string{YakuSuuankou}, wantHan: 13, wantFu: -1, wantRon: 32000, wantTotal: 32000,
+			name: "純正九蓮宝燈（子，双倍 64000）", hand: "11123456789995m", winning: "5m", ctx: child,
+			wantYaku: []string{YakuChuuren}, wantHan: 26, wantFu: -1, wantRon: 64000, wantTotal: 64000,
 		},
 		{
-			name: "四暗刻 自摸（亲，16000 all = 48000）", hand: "111m 222p 333s 444z 55m", winning: "5m",
-			ctx: dealerTsumo, wantYaku: []string{YakuSuuankou}, wantHan: 13, wantFu: -1,
-			wantChild: 16000, wantDealer: 16000, wantTotal: 48000,
+			name: "大四喜+四暗刻单骑（子，4 倍役满 128000）", hand: "111z 222z 333z 444z 99m", winning: "9m", ctx: child,
+			wantYaku: []string{YakuSuuankou, YakuDaisuushii}, wantHan: 52, wantFu: -1, wantRon: 128000, wantTotal: 128000,
 		},
 		{
 			name: "大三元（子，32000）", hand: "555z 666z 777z 123m 99p", winning: "9p", ctx: child,
@@ -176,9 +192,9 @@ func TestGoldenHands(t *testing.T) {
 			wantYaku: []string{YakuRiichi, YakuPinfu}, wantHan: 2, wantFu: 30, wantRon: 5000, wantTotal: 5000,
 		},
 		{
-			name: "国士 + 1 本场（亲，48300）", hand: "19m 19p 19s 1234567z 1m", winning: "1m",
+			name: "国士十三面 + 1 本场（亲，96300）", hand: "19m 19p 19s 1234567z 1m", winning: "1m",
 			ctx:      ctxWith(func(c *ScoreContext) { c.SeatWind = tile.East; c.Honba = 1 }),
-			wantYaku: []string{YakuKokushi}, wantHan: 13, wantFu: 25, wantRon: 48300, wantTotal: 48300,
+			wantYaku: []string{YakuKokushi}, wantHan: 26, wantFu: 25, wantRon: 96300, wantTotal: 96300,
 		},
 		{
 			name: "七对+宝牌 2（子，25 符 4 翻 6400）", hand: "11m 22m 33m 44p 55p 66s 11z", winning: "1z",

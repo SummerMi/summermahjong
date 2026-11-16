@@ -113,6 +113,9 @@ type WinShape struct {
 	Wait    WaitType
 	Pattern string
 	Tiles   []tile.Tile
+	// WinningTile 是和了牌（契约 v1.3 新增）：双倍役满的判定需要区分
+	// 「国士十三面 / 单面」「純正九蓮 / 九蓮」与「四暗刻单骑 / 四暗刻」。
+	WinningTile tile.Tile
 }
 
 // IsWinning 报告手牌是否和牌；等价于 Decompose 的 ok。
@@ -188,20 +191,22 @@ func DecomposeWithOptions(hand []tile.Tile, melds []Meld, winning tile.Tile, opt
 		}
 		if isSevenPairs(c, !opts.StrictSevenPairs()) {
 			shape := WinShape{
-				Jantou:  winning,
-				Wait:    WaitTanki,
-				Pattern: PatternSevenPairs,
-				Tiles:   slices.Clone(hand),
+				Jantou:      winning,
+				Wait:        WaitTanki,
+				Pattern:     PatternSevenPairs,
+				Tiles:       slices.Clone(hand),
+				WinningTile: winning,
 			}
 			applyAka(&shape, hand, winning)
 			return shape, true
 		}
 		if isKokushi(c) {
 			shape := WinShape{
-				Jantou:  winning,
-				Wait:    WaitTanki,
-				Pattern: PatternKokushi,
-				Tiles:   slices.Clone(hand),
+				Jantou:      winning,
+				Wait:        WaitTanki,
+				Pattern:     PatternKokushi,
+				Tiles:       slices.Clone(hand),
+				WinningTile: winning,
 			}
 			applyAka(&shape, hand, winning)
 			return shape, true
@@ -256,7 +261,7 @@ func decomposeClosedStandard(c counts, required int, winning tile.Kind) (tile.Ti
 // buildStandardShape 组装标准型的 WinShape：
 // 先用 applyAka 只处理暗牌部分（副露牌的赤宝牌标记由调用方直接带进来），再合并副露、排序、记录全部牌。
 func buildStandardShape(hand []tile.Tile, called []MeldShape, jantou tile.Tile, closed []MeldShape, wait WaitType, winning tile.Tile) WinShape {
-	shape := WinShape{Jantou: jantou, Melds: closed, Wait: wait, Pattern: PatternStandard}
+	shape := WinShape{Jantou: jantou, Melds: closed, Wait: wait, Pattern: PatternStandard, WinningTile: winning}
 	applyAka(&shape, hand, winning)
 
 	merged := make([]MeldShape, 0, len(called)+len(closed))

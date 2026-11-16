@@ -55,12 +55,15 @@ const yakumanHan = 13
 
 // Yaku 是一个役种（契约 §3）。
 //
-// Han 是役种本身的翻数；Yakuman=true 时固定为 13（单倍役满）。
+// Han 是役种本身的翻数；Yakuman=true 时按 13×YakumanMultiplier 计
+// （天凤的双倍役满：国士十三面 / 四暗刻单骑 / 大四喜 / 純正九蓮 = 26 翻）。
 // 宝牌/赤宝牌/里宝牌不是役种，不计入 Evaluate 的返回值，见 ScoreContext 的说明。
 type Yaku struct {
 	Name    string
 	Han     int
 	Yakuman bool
+	// YakumanMultiplier 是役满倍数：1 或 2；非役满为 0。
+	YakumanMultiplier int
 }
 
 // ScoreContext 是计分所需的场况与和了方式（契约 §3 / §8）。
@@ -143,59 +146,130 @@ func Evaluate(shape WinShape, ctx ScoreContext) (yaku []Yaku, han int, fu int, e
 }
 
 // evalYakuman 判定役满（按固定顺序返回，便于测试与展示稳定）。
+//
+// 双倍役满（天凤规则）：
+//   - 国士十三面：和了牌与手上的对子同种（c[winning]==2）；
+//   - 四暗刻单骑：待ち类型是单骑（将牌即和了牌）；
+//   - 大四喜：四组风刻；
+//   - 純正九蓮：和牌前的手牌恰好是 1112345678999。
 func evalYakuman(shape WinShape, ctx ScoreContext) []Yaku {
 	c := shapeCounts(shape)
 	out := make([]Yaku, 0, 3)
-	add := func(name string) {
-		out = append(out, Yaku{Name: name, Han: yakumanHan, Yakuman: true})
+	add := func(name string, multiplier int) {
+		if multiplier < 1 {
+			multiplier = 1
+		}
+		out = append(out, Yaku{
+			Name:              name,
+			Han:               yakumanHan * multiplier,
+			Yakuman:           true,
+			YakumanMultiplier: multiplier,
+		})
 	}
 
 	// 天和 / 地和与牌型无关，但只可能出现在自摸第一巡（validateContext 已校验）。
 	if ctx.Tenhou {
-		add(YakuTenhou)
+		add(YakuTenhou, 1)
 	}
 	if ctx.Chiihou {
-		add(YakuChiihou)
+		add(YakuChiihou, 1)
 	}
 
 	if shape.Pattern == PatternKokushi {
-		add(YakuKokushi)
+		multiplier := 1
+		if kokushiThirteenSided(shape, c) {
+			multiplier = 2
+		}
+		add(YakuKokushi, multiplier)
 		return out
 	}
 
 	// 字一色：全字牌（七对形也可成立）。
 	if allHonors(c) {
-		add(YakuTsuuiisou)
+		add(YakuTsuuiisou, 1)
 	}
 	if shape.Pattern == PatternSevenPairs {
 		return out
 	}
 
 	if allTerminals(c) {
-		add(YakuChinroutou)
+		add(YakuChinroutou, 1)
 	}
 	if allGreen(c) {
-		add(YakuRyuuiisou)
+		add(YakuRyuuiisou, 1)
 	}
 	if isChuuren(shape, c) {
-		add(YakuChuuren)
+		multiplier := 1
+		if isJunseiChuuren(shape, c) {
+			multiplier = 2
+		}
+		add(YakuChuuren, multiplier)
 	}
 	if shapeMenzen(shape) && concealedPonCount(shape) == meldsRequired {
-		add(YakuSuuankou)
+		multiplier := 1
+		if shape.Wait == WaitTanki {
+			multiplier = 2
+		}
+		add(YakuSuuankou, multiplier)
 	}
 	if dragonTripletCount(shape) == 3 {
-		add(YakuDaisangen)
+		add(YakuDaisangen, 1)
 	}
 	switch winds := windTripletCount(shape); {
 	case winds == 4:
-		add(YakuDaisuushii)
+		add(YakuDaisuushii, 2)
 	case winds == 3 && shape.Jantou.Kind.IsWind():
-		add(YakuShousuushii)
+		add(YakuShousuushii, 1)
 	}
 	if kanCount(shape) == meldsRequired {
-		add(YakuSuukantsu)
+		add(YakuSuukantsu, 1)
 	}
 	return out
+}
+
+// kokushiThirteenSided 报告国士是否十三面听：成和时和了牌与手上的对子同种。
+//
+// 十三面：和牌前 13 种幺九字牌各一张，和了牌补成对子（c[winning]==2）；
+// 单面：和牌前缺一种、已有对子，和了牌补的是缺的那一张（c[winning]==1）。
+func kokushiThirteenSided(shape WinShape, c counts) bool {
+	kind := shape.WinningTile.Kind
+	if kind >= tile.NumKinds {
+		return false
+	}
+	return c[kind] == 2
+}
+
+// isJunseiChuuren 报告是否純正九蓮宝燈：把和了牌从计数里去掉后，恰好是 1112345678999。
+func isJunseiChuuren(shape WinShape, c counts) bool {
+	if !isChuuren(shape, c) {
+		return false
+	}
+	winning := int(shape.WinningTile.Kind)
+	if winning >= tile.NumKinds || c[winning] == 0 {
+		return false
+	}
+	suits, hasHonor := suitSet(c)
+	if hasHonor || len(suits) != 1 {
+		return false
+	}
+	base := 0
+	for suit := tile.Man; suit <= tile.Sou; suit++ {
+		if suits[suit] {
+			base = int(suit) * 9
+		}
+	}
+	if winning < base || winning >= base+9 {
+		return false
+	}
+	pre := c
+	pre[winning]--
+	want := [9]uint8{3, 1, 1, 1, 1, 1, 1, 1, 3}
+	for i := 0; i < 9; i++ {
+		if pre[base+i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // evalNormal 判定普通役（不含役满；调用前已确认没有役满）。

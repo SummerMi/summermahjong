@@ -137,6 +137,10 @@ const (
 	RyuukyokuKyuushu = "kyuushu"
 	// RyuukyokuHaitei 是荒牌流局（牌山摸尽）。
 	RyuukyokuHaitei = "haitei"
+	// RyuukyokuSancha 是三家和了（三家同时荣和，途中流局）。
+	RyuukyokuSancha = "sancha"
+	// RyuukyokuSuucha 是四家立直（第 4 家立直宣言后途中流局）。
+	RyuukyokuSuucha = "suucha"
 )
 
 // ── 摸牌阶段 ──────────────────────────────────────────────────────
@@ -612,8 +616,20 @@ func (s *State) resolveResponses() error {
 	}
 	s.Pending = nil
 
+	// 0) 四家立直：第 4 家宣言牌打出后立即途中流局（天鳳式；优先于任何响应，
+	//    包括对这张宣言牌的荣和）。立直棒留在场上，本场 +1，亲家连庄。
+	if pending.Kind == ResponseToDiscard && s.allRiichi() {
+		s.finishRyuukyoku(RyuukyokuSuucha, true)
+		return nil
+	}
+
 	// 1) 荣和优先（多家荣和按 Ruleset.DoubleRon）
 	winners := s.ronWinners(pending)
+	// 三家和了：三家同时荣和 = 途中流局（不结算、亲家连庄），天鳳式。
+	if len(winners) >= 3 {
+		s.finishRyuukyoku(RyuukyokuSancha, true)
+		return nil
+	}
 	if len(winners) > 0 {
 		if !s.Rules.DoubleRon && len(winners) > 1 {
 			winners = winners[:1] // 头跳：最近的一家
@@ -788,6 +804,8 @@ func (s *State) buildWinContext(seat Seat, hand []tile.Tile, winning tile.Tile, 
 		WinningTile:    winning,
 		Riichi:         s.Riichi[seat],
 		Ippatsu:        s.Riichi[seat] && s.Ippatsu[seat],
+		Tenhou:         s.isTenhou(seat, tsumo),
+		Chiihou:        s.isChiihou(seat, tsumo),
 		Rinshan:        tsumo && s.lastDrawRinshan,
 		Chankan:        chankan,
 		Haitei:         tsumo && s.Wall.Remaining() == 0,
@@ -797,6 +815,38 @@ func (s *State) buildWinContext(seat Seat, hand []tile.Tile, winning tile.Tile, 
 		Honba:          s.Honba,
 		RiichiSticks:   s.RiichiStix,
 	}
+}
+
+// anyRiichi 报告本局是否已有人立直。
+func (s *State) anyRiichi() bool {
+	for seat := 0; seat < 4; seat++ {
+		if s.Riichi[seat] {
+			return true
+		}
+	}
+	return false
+}
+
+// allRiichi 报告四家是否都已立直（四家立直途中流局判定）。
+func (s *State) allRiichi() bool {
+	for seat := 0; seat < 4; seat++ {
+		if !s.Riichi[seat] {
+			return false
+		}
+	}
+	return true
+}
+
+// isTenhou 报告是否满足天和：亲家第一次摸牌即自摸，且全场无副露、无立直。
+//
+// 本引擎由亲家先摸第一张牌，因此 SeatDraws[亲家]==1 等价于「配牌直后」。
+func (s *State) isTenhou(seat Seat, tsumo bool) bool {
+	return tsumo && seat == s.Dealer && s.SeatDraws[seat] == 1 && s.Calls == 0 && !s.anyRiichi()
+}
+
+// isChiihou 报告是否满足地和：子家第一次摸牌即自摸，且全场无副露、无立直。
+func (s *State) isChiihou(seat Seat, tsumo bool) bool {
+	return tsumo && seat != s.Dealer && s.SeatDraws[seat] == 1 && s.Calls == 0 && !s.anyRiichi()
 }
 
 // applyDeltas 应用四家点数变化；要求总和为 0（防止计分实现算错）。
@@ -817,12 +867,30 @@ func (s *State) applyDeltas(deltas [4]int) error {
 // finishRyuukyoku 结算流局：听牌料分配 + 流局事件 + round_end。
 //
 // abortive=true 表示途中流局（九种九牌等）：不做听牌料，亲家连庄。
+//
+// 荒牌流局时先检查流し満貫（nagashi）：满足者按「满贯自摸」结算
+// （亲 4000 all / 子 2000-4000），此时跳过听牌料；亲家在满足者中则连庄。
+// 立直棒留在场上（本实现的约定，见 docs/riichi-规则范围与役种清单）。
 func (s *State) finishRyuukyoku(reason string, abortive bool) {
 	var tenpai [4]bool
 	var deltas [4]int
 	tenpaiSeats := make([]int, 0, 4)
+	var nagashiSeats []int
 
-	if !abortive {
+	if reason == RyuukyokuHaitei {
+		nagashiSeats = s.nagashiSeats()
+	}
+	if len(nagashiSeats) > 0 {
+		reason = RyuukyokuNagashi
+		deltas = s.nagashiDeltas(nagashiSeats)
+		if err := s.applyDeltas(deltas); err != nil {
+			// 满贯支付只涉及 2000/4000 的分配，理论不会失败；失败则记 error 事件
+			s.emitPayload(EventError, s.Dealer, nil, map[string]any{
+				"code":    "NAGASHI_SETTLE",
+				"message": err.Error(),
+			})
+		}
+	} else if !abortive {
 		tenpaiCount := 0
 		for seat := Seat(0); seat < 4; seat++ {
 			tenpai[seat] = s.isTenpai(seat)
@@ -853,17 +921,93 @@ func (s *State) finishRyuukyoku(reason string, abortive bool) {
 	}
 
 	dealerRepeat := true
-	if !abortive {
+	switch {
+	case len(nagashiSeats) > 0:
+		dealerRepeat = containsSeat(nagashiSeats, s.Dealer)
+	case !abortive:
 		dealerRepeat = tenpai[s.Dealer]
 	}
-	s.emitPayload(EventRyuukyoku, s.Dealer, nil, map[string]any{
+
+	payload := map[string]any{
 		"reason":       reason,
 		"tenpai_seats": tenpaiSeats,
 		"score_deltas": deltas,
-	})
+	}
+	if len(nagashiSeats) > 0 {
+		payload["nagashi_seats"] = nagashiSeats
+	}
+	s.emitPayload(EventRyuukyoku, s.Dealer, nil, payload)
 	s.LastDealerRepeat = dealerRepeat
 	s.Phase = PhaseRoundEnd
 	s.emitRoundEnd(dealerRepeat)
+}
+
+// nagashiSeats 返回荒牌流局时满足流し満貫的座位。
+//
+// 条件（天鳳式）：自己的舍牌全部是幺九牌/字牌，且没有任何一张被鸣走。
+// 被鸣走的舍牌会从牌河移除，因此用「是否有副露的 From == 该座位」判定
+// （暗杠 From 是自己，不算被鸣，需排除）。
+func (s *State) nagashiSeats() []int {
+	seats := make([]int, 0, 4)
+	for seat := Seat(0); seat < 4; seat++ {
+		if !s.isNagashi(seat) {
+			continue
+		}
+		seats = append(seats, int(seat))
+	}
+	return seats
+}
+
+// isNagashi 报告某座位是否满足流し満貫。
+func (s *State) isNagashi(seat Seat) bool {
+	discards := s.Discards[seat]
+	if len(discards) == 0 {
+		return false
+	}
+	for _, tl := range discards {
+		if !tl.Kind.IsTerminalOrHonor() {
+			return false
+		}
+	}
+	for other := Seat(0); other < 4; other++ {
+		for _, meld := range s.Melds[other] {
+			if meld.Kind != MeldKanAnkan && meld.From == seat {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// nagashiDeltas 计算流し満貫的四家点数变化（满贯自摸：亲 4000 all / 子 2000-4000）。
+func (s *State) nagashiDeltas(seats []int) [4]int {
+	var deltas [4]int
+	for _, seat := range seats {
+		for other := 0; other < 4; other++ {
+			if other == seat {
+				continue
+			}
+			pay := 2000
+			if Seat(seat) == s.Dealer {
+				pay = 4000 // 亲家满贯自摸：每家 4000
+			} else if Seat(other) == s.Dealer {
+				pay = 4000 // 子家满贯自摸：亲家付 4000
+			}
+			deltas[other] -= pay
+			deltas[seat] += pay
+		}
+	}
+	return deltas
+}
+
+// containsSeat 报告座位列表里是否包含 seat。
+func containsSeat(seats []int, seat Seat) bool {
+	for _, s := range seats {
+		if Seat(s) == seat {
+			return true
+		}
+	}
+	return false
 }
 
 // emitRoundEnd 追加本局结束事件（honba 为下一局本场数）。

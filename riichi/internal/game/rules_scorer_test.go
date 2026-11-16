@@ -255,20 +255,20 @@ func TestRulesScorerGoldenKokushi(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	if han != 13 || fu != 25 {
-		t.Fatalf("rules 直算 han/fu = %d/%d，期望 13/25", han, fu)
+	if han != 26 || fu != 25 {
+		t.Fatalf("rules 直算 han/fu = %d/%d，期望 26/25（国士十三面双倍役满）", han, fu)
 	}
 	points := rules.Score(han, fu, ctx)
-	if points.Ron != 32000 {
-		t.Fatalf("rules 直算荣和=%d want 32000", points.Ron)
+	if points.Ron != 64000 {
+		t.Fatalf("rules 直算荣和=%d want 64000", points.Ron)
 	}
 
 	payload := winEventPayload(t, s, EventRon)
-	if got := payloadInt(t, payload, "han"); got != 13 {
-		t.Fatalf("han=%d want 13", got)
+	if got := payloadInt(t, payload, "han"); got != 26 {
+		t.Fatalf("han=%d want 26", got)
 	}
-	if got := payloadInt(t, payload, "points"); got != 32000 {
-		t.Fatalf("points=%d want 32000", got)
+	if got := payloadInt(t, payload, "points"); got != 64000 {
+		t.Fatalf("points=%d want 64000", got)
 	}
 	want := rulesDirectDeltas(points, 1, 0, false, 0, 0)
 	if got := payloadDeltas(t, payload); got != want {

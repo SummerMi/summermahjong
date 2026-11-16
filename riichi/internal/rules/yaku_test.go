@@ -59,15 +59,16 @@ func TestYakuPositiveClosed(t *testing.T) {
 		{"混一色", "123m 456m 789m 111z 22z", "2z", plainCtx(), YakuHonitsu, 3},
 		{"清一色", "123m 456m 789m 234m 99m", "9m", plainCtx(), YakuChinitsu, 6},
 
-		{"国士无双", "19m 19p 19s 1234567z 1m", "1m", plainCtx(), YakuKokushi, 13},
-		{"四暗刻", "111m 222p 333s 444z 55m", "5m", plainCtx(), YakuSuuankou, 13},
+		{"国士无双（十三面，双倍）", "19m 19p 19s 1234567z 1m", "1m", plainCtx(), YakuKokushi, 26},
+		{"四暗刻（单骑，双倍）", "111m 222p 333s 444z 55m", "5m", plainCtx(), YakuSuuankou, 26},
 		{"大三元", "555z 666z 777z 123m 99p", "9p", plainCtx(), YakuDaisangen, 13},
 		{"小四喜", "111z 222z 333z 44z 567m", "4z", plainCtx(), YakuShousuushii, 13},
-		{"大四喜", "111z 222z 333z 444z 99m", "9m", plainCtx(), YakuDaisuushii, 13},
+		{"大四喜（双倍）", "111z 222z 333z 444z 99m", "9m", plainCtx(), YakuDaisuushii, 26},
 		{"字一色", "111z 222z 333z 444z 55z", "5z", plainCtx(), YakuTsuuiisou, 13},
 		{"绿一色", "222s 333s 444s 666s 88s", "8s", plainCtx(), YakuRyuuiisou, 13},
 		{"清老头", "111m 999m 111p 999p 11s", "1s", plainCtx(), YakuChinroutou, 13},
-		{"九莲宝灯", "11123456789995m", "5m", plainCtx(), YakuChuuren, 13},
+		{"九莲宝灯（純正，双倍）", "11123456789995m", "5m", plainCtx(), YakuChuuren, 26},
+		{"九莲宝灯（单面，单倍）", "11122345678999m", "9m", plainCtx(), YakuChuuren, 13},
 		{"天和", plainHand, "6s", ctxWith(func(c *ScoreContext) {
 			c.SeatWind = tile.East
 			c.Tsumo = true

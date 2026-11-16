@@ -275,6 +275,7 @@ func setActor(t *testing.T, s *State, seat Seat, handText string) {
 func TestTsumoDealerRepeat(t *testing.T) {
 	s := mustState(t, 42)
 	setActor(t, s, 0, "123m456m789m11p234p") // 摸 4p 自摸
+	s.SeatDraws[0] = 2                       // 模拟非第一巡自摸，避免触发天和
 	s.RiichiStix = 2
 	s.Scores[0] -= 2000 // 模拟两根立直棒已扣除
 	if err := s.Apply(Action{Kind: ActTsumo, Seat: 0}); err != nil {
@@ -316,6 +317,7 @@ func TestTsumoDealerRepeat(t *testing.T) {
 func TestTsumoNonDealerRotates(t *testing.T) {
 	s := mustState(t, 42)
 	setActor(t, s, 1, "123m456m789m11p234p")
+	s.SeatDraws[1] = 2 // 模拟非第一巡自摸，避免触发地和
 	if err := s.Apply(Action{Kind: ActTsumo, Seat: 1}); err != nil {
 		t.Fatalf("自摸失败: %v", err)
 	}
