@@ -175,12 +175,25 @@ type Event struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// KuikaeRule 是食替禁则口径。
+type KuikaeRule uint8
+
+const (
+	// KuikaeSame 只禁「刚鸣的牌同种」——天凤默认口径（零值）。
+	KuikaeSame KuikaeRule = iota
+	// KuikaeSuji 额外禁同花色的筋（±3）——比天凤严格，旧实现口径。
+	KuikaeSuji
+	// KuikaeNone 允许食替（部分地方规则）。
+	KuikaeNone
+)
+
 // Ruleset 是对局规则配置（契约 §8 的子集 + S5 需要的开关）。
 type Ruleset struct {
-	RedFives       int  // 赤宝牌数量 0-3
-	StartingPoints int  // 起始点数，默认 25000
-	DoubleRon      bool // 多家荣和（双响/三响）是否都成立；false 时按头跳只算最近一家
-	RoundLimit     int  // 半荘局数上限（默认 8：东 1-4 + 南 1-4）
+	RedFives       int        // 赤宝牌数量 0-3
+	StartingPoints int        // 起始点数，默认 25000
+	DoubleRon      bool       // 多家荣和（双响/三响）是否都成立；false 时按头跳只算最近一家
+	RoundLimit     int        // 半荘局数上限（默认 8：东 1-4 + 南 1-4）
+	Kuikae         KuikaeRule // 食替禁则口径：零值 = 天凤（只禁同种）
 }
 
 // DefaultRuleset 返回天鳳般默认配置。
@@ -190,6 +203,7 @@ func DefaultRuleset() Ruleset {
 		StartingPoints: 25000,
 		DoubleRon:      true,
 		RoundLimit:     8,
+		Kuikae:         KuikaeSame,
 	}
 }
 

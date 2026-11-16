@@ -208,7 +208,8 @@ func (s *State) legalDiscardActions(seat Seat) []Action {
 	}
 	acts := make([]Action, 0, len(s.Hands[seat])+8)
 
-	// 立直后手牌固定：只能摸切；仍可自摸（立直后必然有摸牌）
+	// 立直后手牌固定：只能摸切；仍可自摸（立直后必然有摸牌）；
+	// 暗杠只在「不改变听牌」时允许（天凤规则，2026-11-16 补）。
 	if s.Riichi[seat] {
 		if s.Drawn == nil {
 			return nil
@@ -216,6 +217,9 @@ func (s *State) legalDiscardActions(seat Seat) []Action {
 		acts = append(acts, Action{Kind: ActDiscard, Seat: seat, Tile: *s.Drawn})
 		if s.canTsumo(seat) {
 			acts = append(acts, Action{Kind: ActTsumo, Seat: seat, Tile: *s.Drawn})
+		}
+		for _, kind := range s.ankanKinds(seat) {
+			acts = append(acts, Action{Kind: ActKanAnkan, Seat: seat, Tile: tile.Tile{Kind: kind}})
 		}
 		return acts
 	}
@@ -349,11 +353,8 @@ func (s *State) doAnkan(seat Seat, kind tile.Kind) error {
 	if s.Phase != PhaseAwaitDiscard || seat != s.Turn || s.Drawn == nil {
 		return fmt.Errorf("%w: 当前不能暗杠", ErrIllegalAction)
 	}
-	if s.Riichi[seat] {
-		return fmt.Errorf("%w: 立直后不可暗杠（简化规则）", ErrIllegalAction)
-	}
-	if s.countKind(seat, kind) < 4 {
-		return fmt.Errorf("%w: 手牌中 %v 不足 4 张", ErrIllegalAction, kind)
+	if err := s.doAnkanPrecheck(seat, kind); err != nil {
+		return err
 	}
 	hand, ok := removeKinds(s.Hands[seat], kind, kind, kind, kind)
 	if !ok {
@@ -535,7 +536,7 @@ func (s *State) canCallThenDiscard(seat Seat, action Action, called tile.Tile, m
 		// 杠后摸岭上再打：手牌数 = len(rest)+1，理论上恒 > 0；保守要求 >= 1。
 		return len(rest)+1 >= 1
 	}
-	forbidden := kuikaeForbiddenKinds(meldKind, called.Kind)
+	forbidden := s.kuikaeForbiddenKinds(meldKind, called.Kind)
 	for _, handTile := range rest {
 		allowed := true
 		for _, kind := range forbidden {
@@ -730,7 +731,7 @@ func (s *State) applyCallFromDiscard(pending *PendingResponses, caller Seat, act
 	s.Turn = caller
 	s.Phase = PhaseAwaitDiscard
 	s.Drawn = nil
-	s.Kuikae[caller] = kuikaeForbiddenKinds(meldKind, pending.Tile.Kind)
+	s.Kuikae[caller] = s.kuikaeForbiddenKinds(meldKind, pending.Tile.Kind)
 
 	if meldKind == MeldKanDaiminkan {
 		s.revealDora()
@@ -1247,21 +1248,83 @@ func (s *State) canKyuushu(seat Seat) bool {
 }
 
 // ankanKinds 返回当前可暗杠的牌种。
+//
+// 立直后只返回「杠了也不改变听牌」的牌种（天凤规则）。
 func (s *State) ankanKinds(seat Seat) []tile.Kind {
-	if s.Riichi[seat] {
-		return nil
-	}
 	counts := make(map[tile.Kind]int, 14)
 	for _, tl := range s.Hands[seat] {
 		counts[tl.Kind]++
 	}
 	kinds := make([]tile.Kind, 0, 2)
 	for kind := tile.Kind(0); kind < tile.NumKinds; kind++ {
-		if counts[kind] >= 4 {
-			kinds = append(kinds, kind)
+		if counts[kind] < 4 {
+			continue
 		}
+		if s.Riichi[seat] && !s.ankanKeepsWaits(seat, kind) {
+			continue
+		}
+		kinds = append(kinds, kind)
 	}
 	return kinds
+}
+
+// doAnkanPrecheck 校验暗杠条件：4 张同种；立直后还要求不改变听牌。
+func (s *State) doAnkanPrecheck(seat Seat, kind tile.Kind) error {
+	if s.countKind(seat, kind) < 4 {
+		return fmt.Errorf("%w: 手牌中 %v 不足 4 张", ErrIllegalAction, kind)
+	}
+	if s.Riichi[seat] && !s.ankanKeepsWaits(seat, kind) {
+		return fmt.Errorf("%w: 立直后暗杠必须不改变听牌", ErrIllegalAction)
+	}
+	return nil
+}
+
+// ankanKeepsWaits 报告立直后暗杠 kind 是否不改变听牌。
+//
+// 判定：把刚摸到的牌去掉，得到立直时的 13-3m 张听牌形，计算 waitsBefore；
+// 再把 4 张 kind 移除、把杠登记成副露，得到等效 13 张形，计算 waitsAfter；
+// 两者完全相同才允许（杠后摸岭上牌必须摸切，因此岭上牌不影响听牌）。
+func (s *State) ankanKeepsWaits(seat Seat, kind tile.Kind) bool {
+	if s.Drawn == nil {
+		return false
+	}
+	hand := s.Hands[seat]
+	drawn := s.Drawn.Kind
+	before := make([]tile.Tile, 0, len(hand)-1)
+	removed := false
+	for _, tl := range hand {
+		if !removed && tl.Kind == drawn {
+			removed = true
+			continue
+		}
+		before = append(before, tl)
+	}
+	if !removed || len(before)+3*len(s.Melds[seat]) != 13 {
+		return false
+	}
+	waitsBefore := s.waitingTiles(before, s.Melds[seat])
+
+	after, ok := removeKinds(hand, kind, kind, kind, kind)
+	if !ok {
+		return false
+	}
+	meldsAfter := append(append([]Meld{}, s.Melds[seat]...),
+		Meld{Kind: MeldKanAnkan, Tiles: fourTiles(kind), From: seat})
+	waitsAfter := s.waitingTiles(after, meldsAfter)
+	return sameKinds(waitsBefore, waitsAfter)
+}
+
+// sameKinds 比较两个听牌列表是否完全一致（waitingTiles 已按牌种升序）。
+func sameKinds(a, b []tile.Tile) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Kind != b[i].Kind {
+			return false
+		}
+	}
+	return true
 }
 
 // shouminkanKinds 返回当前可加杠的牌种（已有碰且手里有第 4 张）。
@@ -1382,31 +1445,36 @@ func fourTiles(kind tile.Kind) []tile.Tile {
 	return out
 }
 
-// kuikaeForbiddenKinds 计算吃/碰后立即打牌的禁则牌种（食替禁止，天鳳式）。
+// kuikaeForbiddenKinds 计算吃/碰后立即打牌的禁则牌种（食替禁止）。
 //
-//   - 碰：不能打刚碰的牌（同种）。
-//   - 吃：不能打刚吃的牌，以及它的「筋」（同花色 ±3）——
-//     例如吃 1m 后不能打 1m 与 4m。
-func kuikaeForbiddenKinds(kind MeldKind, called tile.Kind) []tile.Kind {
-	if kind == MeldPon {
-		return []tile.Kind{called}
-	}
-	if kind != MeldChi {
+// 口径由 Ruleset.Kuikae 决定：
+//   - KuikaeSame（天凤默认）：只禁刚鸣的牌本身；
+//   - KuikaeSuji：额外禁同花色的筋（±3）——比天凤严格；
+//   - KuikaeNone：允许食替。
+func (s *State) kuikaeForbiddenKinds(kind MeldKind, called tile.Kind) []tile.Kind {
+	if kind != MeldPon && kind != MeldChi {
 		return nil
 	}
-	forbidden := []tile.Kind{called}
-	if called.IsHonor() {
-		return forbidden
-	}
-	number := called.Number()
-	base := (int(called) / 9) * 9
-	for _, delta := range []int{-3, 3} {
-		suji := number + delta
-		if suji >= 1 && suji <= 9 {
-			forbidden = append(forbidden, tile.Kind(base+suji-1))
+	switch s.Rules.Kuikae {
+	case KuikaeNone:
+		return nil
+	case KuikaeSuji:
+		forbidden := []tile.Kind{called}
+		if kind == MeldPon || called.IsHonor() {
+			return forbidden
 		}
+		number := called.Number()
+		base := (int(called) / 9) * 9
+		for _, delta := range []int{-3, 3} {
+			suji := number + delta
+			if suji >= 1 && suji <= 9 {
+				forbidden = append(forbidden, tile.Kind(base+suji-1))
+			}
+		}
+		return forbidden
+	default: // KuikaeSame
+		return []tile.Kind{called}
 	}
-	return forbidden
 }
 
 // kuikaeAllowed 报告某座位现在是否可以打 kind。

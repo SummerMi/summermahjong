@@ -17,6 +17,7 @@ import (
 func callGuardState(t *testing.T, seat0Hand string) *State {
 	t.Helper()
 	s := mustManualState(t, 42) // 手动响应窗口，才能观察到 Pending
+	s.Rules.Kuikae = KuikaeSuji // 这组守卫测试针对「同种+筋」的严格口径
 	s.Dealer = 0
 	s.Scores = [4]int{25000, 25000, 25000, 25000}
 	// seat0：3 组副露 + 4 张手牌（13 张）

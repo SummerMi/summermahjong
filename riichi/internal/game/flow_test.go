@@ -585,6 +585,7 @@ func TestKuikaeChiSuji(t *testing.T) {
 		"1m4m7m1s4s7s2p3p6p8p1z2z3z",
 		"1m4m7m1s4s7s2p6p8p9p1z2z3z",
 	)
+	s.Rules.Kuikae = KuikaeSuji // 本用例专门验证严格的「同种+筋」口径
 	s.Hands[1] = append(s.Hands[1], mustTile(t, "2p"), mustTile(t, "8p"))
 	applyDiscard(t, s, 0, "5p")
 	chi := Action{Kind: ActChi, Seat: 1, Tile: mustTile(t, "5p"),
