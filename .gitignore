@@ -29,3 +29,21 @@ data/
 
 # ---- pytest 临时目录（Windows 下可能落在仓库根）----
 pytest-of-*/
+
+# ---- 个人材料（不入公开仓库；私有备份在仓库外）----
+docs/简历*
+docs/投递*
+docs/面经*
+docs/大厂冲刺计划*
+docs/第二项目选题*
+docs/市场调研*
+docs/奖项与证书清点*
+docs/项目包装-RuoYiAI*
+docs/RuoYiAI-*
+docs/在线简历工具*
+docs/Go后端与Agent岗位调研*
+docs/W1每日任务表*
+docs/W2每日任务表*
+docs/目标公司投递清单*
+docs/riichi-简历与讲法*
+docs/riichi-面试讲法*
